@@ -1,0 +1,109 @@
+entish
+======
+
+WARNING: AI vibe-coded software.
+
+Scripting language and interactive shell for my next 10 years.
+Ideas stolen from many different languages.
+
+
+Lang
+====
+
+Byte pipelines
+--------------
+
+    # standard unix byte pipelines
+    $ ls *.mp4 | lines |> each { |f|        # | lines: stdout -> list of lines
+        # extract audio
+        ffmpeg -i $f -vn -c:a copy $f.m4a
+    }
+
+
+Value pipeline (from elvish / rash)
+-----------------------------------
+
+    # | carries stdout, |> carries values, nothing else crosses
+    $ ls | lines     # it's an entish value, not stdout
+    [ 'main.go' 'go.mod' ]
+    $ ls | lines |> len
+    2
+
+    # per-item logic on real values: files over 1000 bytes
+    # (bash: while read f; do [ "$(stat -c %s "$f")" -gt 1000 ] && ...)
+    $ ls | lines |> filter { |f| (num $(stat -c %s $f)) > 1000 }
+    [ 'big.bin' ]
+
+    # a list stays a list: no word splitting, names with spaces are safe
+    # (bash: mapfile -t, or find -print0 | xargs -0)
+    $ let mp4 = ls | lines |> filter { |f| $f != 'big.bin' }
+    $ ls -1 ...$mp4
+    a b.mp4
+    c.mp4
+
+
+Functional, no loops
+--------------------
+
+    a |> f x y    ≡   f x y a
+
+    # a fn writes output and returns a value; each operator takes one
+    $ fn build { go build -o app .; 'app' }   # output to stdout, value 'app'
+    $ let bin = build                        # $( build ) would take the output
+
+    $ [1 2 3 4 5] |> filter { $it % 2 == 1 } |> map { $it * $it }
+    [1 9 25]
+
+    # recursion instead of loops
+    $ fn fact n { if $n <= 1 { 1 } else { $n * (fact ($n - 1)) } }
+    $ fact 5
+    120
+
+    # fns are values: named fns and builtins too
+    $ fn double x { $x * 2 }
+    $ [1 2 3] |> map $double
+    [2 4 6]
+    $ ['a b' 'c'] |> map $lines
+    [['a b'] ['c']]
+
+
+Rational by default (from raku)
+-------------------------------
+
+    $ 0.1 + 0.2 == 0.3
+    $true
+
+    $ 1 / 3 * 4
+    4/3
+
+    # no silent rounding; round explicitly
+    $ 1 / 3 |> round 4
+    0.3333
+
+
+Multiline strings (from zig)
+----------------------------
+
+    $ let name = "entish"
+    $ echo (
+        $\\name = "$name"
+        \\print(f"hello {name}")
+      ) | python3 -
+    hello entish
+
+
+Editor
+======
+
+- Vim by default
+- Key bindings: `bind ctrl-x { print $it | wl-copy -n }` (a fn with a param
+  gets the input); a str the fn returns is inserted at the cursor:
+  `bind ctrl-v { $(wl-paste -n) }`; a map `[input: str]` replaces the input:
+  `bind alt-q { [input: "shq add $it"] }`. Keys are `ctrl-a`..`ctrl-z` and `alt-c`.
+
+Features
+========
+- async direnv integration
+- async completion; arguments of external commands are completed by fish (`complete -C`) when fish is on PATH
+
+

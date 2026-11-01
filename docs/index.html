@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>entish(1)</title>
+<style>
+  :root {
+    --paper: #f4f1ea;
+    --ink: #24231f;
+    --dim: #8a867c;
+    --accent: #0f6b5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 17px/1.55 "IBM Plex Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  a { color: var(--accent); }
+  .page {
+    max-width: 78ch;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+  }
+  .rule {
+    display: flex;
+    justify-content: space-between;
+    color: var(--dim);
+  }
+  header.rule { border-bottom: 1px solid var(--ink); padding-bottom: 6px; }
+  footer.rule { border-top: 1px solid var(--ink); padding-top: 6px; margin-top: 48px; }
+  h2, h3 { font: inherit; margin: 2em 0 0.6em; }
+  h2 { font-weight: bold; letter-spacing: 0.08em; }
+  h3 { margin-left: 4ch; font-style: italic; }
+  section > p, section > ul, section > pre, section > dl { margin-left: 4ch; }
+  ul { padding-left: 2ch; list-style: "- "; }
+  pre {
+    font: inherit;
+    font-size: 0.9em;
+    margin-top: 0.6em;
+    margin-bottom: 1.4em;
+    padding: 0.2em 0 0.2em 2ch;
+    border-left: 2px solid var(--accent);
+    overflow-x: auto;
+  }
+  .warn { color: #a3361a; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2em 2ch; }
+  dd { margin: 0; }
+  .demo { margin: 1em 0 2em 4ch; border: 1px solid var(--dim); }
+  .demo-screen {
+    margin: 0; border: 0; padding: 12px; min-height: 11.6em;
+    font-size: 0.8em; line-height: 1.6; white-space: pre; overflow-x: auto;
+  }
+  .demo-screen .fg-green, .demo-screen .fg-brightgreen { color: var(--accent); }
+  .demo-screen .fg-magenta, .demo-screen .fg-brightmagenta { color: #805379; }
+  .demo-screen .fg-cyan { color: #216b80; }
+  .demo-screen .fg-red { color: #a3361a; }
+  .demo-screen .bold { font-weight: bold; }
+  .demo-screen .reverse, .demo-screen .cursor { color: var(--paper); background: var(--ink); }
+  kbd { font: inherit; color: var(--accent); }
+  @media (max-width: 640px) {
+    body { font-size: 14px; }
+    section > p, section > ul, section > pre, section > dl, h3 { margin-left: 1ch; }
+    .demo { margin-left: 1ch; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<header class="rule"><span>ENTISH(1)</span><span>User Commands</span><span>ENTISH(1)</span></header>
+
+<section>
+  <h2>NAME</h2>
+  <p>entish - scripting language and interactive shell for my next 10 years</p>
+</section>
+
+<section>
+  <h2>DESCRIPTION</h2>
+  <p>The shell is the entry point to all work, and the scripting language
+  used most in everyday life. Time to try a new shell for the future ahead.</p>
+  <p class="warn">WARNING: AI vibe-coded software.</p>
+  <p>Ideas stolen from many different languages.
+  Source: <a href="https://github.com/aca/entish">github.com/aca/entish</a></p>
+</section>
+
+<section>
+  <h2>LANG</h2>
+
+  <h3>Byte pipelines</h3>
+<pre># standard unix byte pipelines
+$ ls *.mp4 | lines |&gt; each { |f|        # | lines: stdout -&gt; list of lines
+    # extract audio
+    ffmpeg -i $f -vn -c:a copy $f.m4a
+}</pre>
+
+  <h3>Value pipeline (from elvish / rash)</h3>
+<pre># | carries stdout, |&gt; carries values, nothing else crosses
+$ ls | lines     # it's an entish value, not stdout
+[ 'main.go' 'go.mod' ]
+$ ls | lines |&gt; len
+2
+
+# per-item logic on real values: files over 1000 bytes
+# (bash: while read f; do [ "$(stat -c %s "$f")" -gt 1000 ] &amp;&amp; ...)
+$ ls | lines |&gt; filter { |f| (num $(stat -c %s $f)) &gt; 1000 }
+[ 'big.bin' ]
+
+# a list stays a list: no word splitting, names with spaces are safe
+# (bash: mapfile -t, or find -print0 | xargs -0)
+$ let mp4 = ls | lines |&gt; filter { |f| $f != 'big.bin' }
+$ ls -1 ...$mp4
+a b.mp4
+c.mp4
+
+# with no arg, lines reads stdin like cat, so a fn can take a pipe
+$ fn eachl f { lines |&gt; each $f }
+$ ls *.mp4 | eachl { print "mp4: $it" }
+mp4: a b.mp4
+mp4: c.mp4</pre>
+
+  <h3>Functional, no loops</h3>
+<pre>a |&gt; f x y    ≡   f x y a
+
+# a fn writes output and returns a value; each operator takes one
+$ fn build { go build -o app .; 'app' }   # output to stdout, value 'app'
+$ let bin = build                        # $( build ) would take the output
+
+$ [1 2 3 4 5] |&gt; filter { $it % 2 == 1 } |&gt; map { $it * $it }
+[1 9 25]
+
+# recursion instead of loops
+$ fn fact n { if $n &lt;= 1 { 1 } else { $n * (fact ($n - 1)) } }
+$ fact 5
+120</pre>
+
+  <h3>Rational by default (from raku)</h3>
+<pre>$ 0.1 + 0.2 == 0.3
+$true</pre>
+
+  <h3>Multiline strings (from zig)</h3>
+<pre>$ let name = "world"
+$ let py =
+    $\\name = "$name"
+    \\print(f"hello {name}")
+$ print $py | python3 -
+hello world</pre>
+</section>
+
+<section>
+  <h2>EDITOR</h2>
+  <ul>
+    <li>Vim by default</li>
+  </ul>
+
+  <h3>History search</h3>
+  <p><kbd>Ctrl-R</kbd> searches command history with fzf-style queries.
+  <kbd>Enter</kbd> puts the selection into your input, ready to edit or run.</p>
+  <figure class="demo" data-demo="history" aria-label="History search recording">
+    <pre class="demo-screen" aria-live="off">~/src/entish&gt;                                11/01/2026 09:15:55 PM
+history: git !log
+&gt; 11-01 21:15  git diff                                ~/src/entish
+  11-01 21:15  git status                              ~/src/entish</pre>
+  </figure>
+
+  <h3>Recent locations</h3>
+  <p><kbd>Ctrl-D</kbd> opens recent directories. Type to filter, then
+  <kbd>Enter</kbd> to jump there.</p>
+  <figure class="demo" data-demo="location" aria-label="Location search recording">
+    <pre class="demo-screen" aria-live="off">~&gt;                                           11/01/2026 09:16:02 PM
+location: src
+&gt; 11-01 21:15  ~/src/entish
+  11-01 21:15  ~/src/website</pre>
+  </figure>
+</section>
+
+<section>
+  <h2>FEATURES</h2>
+  <ul>
+    <li>async direnv integration</li>
+  </ul>
+  <h3>Async completion</h3>
+  <p><kbd>Tab</kbd> gets command completions from Fish in the background,
+  including options and their descriptions. Press it again to cycle through matches;
+  <kbd>Enter</kbd> puts the selected one in without running.</p>
+  <figure class="demo" data-demo="completion" aria-label="Async completion recording">
+    <pre class="demo-screen" aria-live="off">~/src/entish&gt; git checkout --t               11/01/2026 09:16:09 PM
+--theirs  (Keep staged changes)  --track  (Track a new branch)</pre>
+  </figure>
+</section>
+
+<section>
+  <h2>SEE ALSO</h2>
+  <dl>
+    <dt><a href="https://elv.sh">elvish</a></dt><dd>value pipelines</dd>
+    <dt><a href="https://github.com/willghatch/racket-rash">rash</a></dt><dd>value pipelines</dd>
+    <dt><a href="https://raku.org">raku</a></dt><dd>rational numbers</dd>
+    <dt><a href="https://ziglang.org">zig</a></dt><dd>multiline strings</dd>
+  </dl>
+</section>
+
+<footer class="rule"><span>entish</span><span>2026-11-01</span><span>ENTISH(1)</span></footer>
+
+</div>
+<script src="recordings/frames.js" defer></script>
+<script src="demos.js" defer></script>
+</body>
+</html>

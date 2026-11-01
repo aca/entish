@@ -1,0 +1,16 @@
+#!/usr/bin/env entish
+# FizzBuzz: 1..100. No loops; seq produces the numbers, each consumes them.
+
+fn fizzbuzz n {
+    if $n % 15 == 0 {
+        'FizzBuzz'
+    } else if $n % 3 == 0 {
+        'Fizz'
+    } else if $n % 5 == 0 {
+        'Buzz'
+    } else {
+        $n
+    }
+}
+
+seq 1 100 | lines |> map { num $it } |> each { print (fizzbuzz $it) }

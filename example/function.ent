@@ -1,0 +1,5 @@
+fn x { print "hello func"; 3 } 
+
+print (call $x)
+
+x |> to_json 

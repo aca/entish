@@ -1,0 +1,9 @@
+#!/usr/bin/env entish
+
+cd $(mktemp -d)
+let x = 'foo" bar" dir'
+mkdir -p -v $x
+ls -al
+
+
+

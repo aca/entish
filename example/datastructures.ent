@@ -1,0 +1,13 @@
+#!/usr/bin/env entish
+
+let arr = ["foo" "bar"]
+
+print $arr
+print (len $arr)
+
+print $arr[0]
+print $arr[1]
+print $arr[0:2]
+print $arr[(len $arr) - 1]
+
+print ($arr |> len)
