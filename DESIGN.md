@@ -24,10 +24,10 @@ Status: design only, not implemented. `entish` is a placeholder name.
 7. **Errors are loud.** Nonzero exit raises unless the command is in condition position. Pipefail is on.
 8. **No POSIX compatibility. No job control.**
 
-## Keywords (6)
+## Keywords (7)
 
 ```
-let  fn  if  else  try  catch
+let  fn  if  else  try  catch  match
 ```
 
 - Reserved only at statement head and at the start of a value. `print if try` prints `if try`.
@@ -36,7 +36,7 @@ let  fn  if  else  try  catch
 - No `set`, `return`, `break`, `continue`.
   - no mutation: rebind with `let` (shadowing)
   - value of a block = its last expression
-  - a value statement that is not the last of its block is a compile error (`unused value`): its value would be dropped silently
+  - a value statement that is not the last of its block is a compile error (`unused value`): its value would be dropped silently. In a script (a file, `-c`, stdin) the last top-level statement is too, since nothing shows it: `entish -c '$(pwd)'` is an error, not a silent no-op. At the REPL the last value is printed.
   - early exit: `if`; loops: collection fns, recursion
 
 ## Builtin fns
@@ -46,21 +46,27 @@ All builtins are fns. A user `fn` of the same name shadows a builtin (planned: a
 | kind | implemented | planned |
 |---|---|---|
 | effect | `print cd export exit` | |
-| meta | | `explain command` |
-| control | `fail call eval` | |
+| meta | | `explain` |
+| control | `fail call eval source` | |
+| meta | `src` | |
 | scope | | `in_dir` |
 | editor | `abbr bind` | |
-| convert | `num str round lines lines0 from_json to_json` | `split_by join_with` |
+| convert | `num str round lines lines0 from_json to_json as_file` | `split_by join_with` |
 | collection (data-last) | `len map filter each keys assoc` | `reduce chunk sort_by count_by get ends_with` |
 
 - Examples in this document use planned builtins too.
 - Converters read stdin: `lines`, `lines0` (NUL-separated) and `from_json` with their data arg left out read their stdin, like `cat` with no file. After `|` that is the previous stage's output: `ls | lines`, `find . -print0 | lines0`, `curl -s $u | from_json`. In a fn it is the fn's stdin, so `fn eachl f { lines |> each $f }` gives `ls | eachl {..}`. Only converters do this: `ls | len` is a compile error (it would count bytes). `lines` alone at the prompt waits for terminal input (end it with Ctrl-D). Removed builtins: `eachl` / `each0`, now `ls | lines |> each {..}`.
 - `to_json` prints a value as compact JSON plus a newline, like `print`, and returns `$nil`: `$xs |> to_json | jq .`. Its inverse is `from_json` (bytes or a str → value); `$(to_json $x)` gives the JSON as a str. Map keys keep their order. A num with no exact decimal (`1/3`) and a fn raise.
 - `from_json` reads one JSON value: numbers are exact nums (`0.1` is 1/10), objects keep key order, `null` is `$nil`; a duplicate key or trailing data raises.
+- `as_file` copies its stdin byte for byte to a new temp file and returns the path, for commands that take only files (process substitution without new syntax): `diff (sort a | as_file) b`, `comm -12 (sort x | as_file) (sort y | as_file)`, `docker run --env-file (pass show env | as_file) img`.
+  - It reads only stdin: `$s |> as_file` and `as_file $s` are compile errors, since only `print` and `to_json` turn values into bytes (`print $s | as_file`).
+  - The file is a real file, so commands that seek or read twice work (zsh `=( )`, not bash `<( )`). The producer runs to the end first, so it does not stream.
+  - A failing producer raises at `as_file`. The file is in `$XDG_RUNTIME_DIR` (else the system temp dir), mode 0600, and is removed when the input ends: a REPL input, or the whole script, so `let p = (cmd | as_file)` can be used on later lines.
+  - bash's `<(cmd)` is a redirect of `( )` here and a compile error with a hint to `as_file`.
 
 - Collection fns take the data as the **last** argument so they compose with `|>`.
 - Names avoid coreutils (`split`, `join`, `fold`), so builtins never hide a common external.
-- `command name args...` runs an external, skipping fns. The name may be a value: `command $cc -o prog prog.c`.
+- `^$cc -o prog prog.c` runs the external named by the str `$cc`, skipping fns (see Call resolution).
 
 ### Names
 
@@ -75,6 +81,7 @@ All builtins are fns. A user `fn` of the same name shadows a builtin (planned: a
 |---|---|
 | keyword | keyword form |
 | `^name` | external from PATH, skips fns |
+| `^$name` (indexing allowed: `^$m[k]`) | external named by the str in `$name`, from PATH or by path if it has `/`; skips fns |
 | word containing `/` (`./x`, `/bin/x`) | external by path |
 | bare word bound to a fn (user `fn` or builtin) | fn call |
 | any other bare word | external from PATH |
@@ -114,8 +121,43 @@ let double = eval '{ |x| $x * 2 }'     # the last statement is the value, here a
 - The source is parsed and checked when the call runs, as the body of `fn _ ...args { src }` at the top level. Its errors raise at the call (`eval: <eval>:1:5: ...`) and can be caught with `try`.
 - It sees top-level fns, builtins, env vars and `$args`; never the caller's variables. Its own `fn` and `let` do not leak out.
 - Its result is that of a fn body: its output, and the value of its last statement.
-- The source must be a `'literal'` or a `$var`, so values go in as `$args` and are never spliced into code. `eval "rm $f"` and `eval $(cmd)` are compile errors; pass values as args, bind computed source first. (v1 also needed this to learn the source's kind before running; that reason is gone, see Open decisions.)
-- Planned: `source path`, a literal path read and checked with the program, whose fns are visible after it.
+- The source is any str: `eval $(cmd)`, `eval "rm $f"`. Interpolating a value into the source splices it into code, so `$f` holding `x; rm -rf ~` runs both; pass values as args instead: `eval 'rm ...$args' $f`. Only the source's position is checked: `'src' |> eval` is a compile error, the piped value would be the last arg.
+- To run a command whose name is a value, use `^$name args...`, not `eval`: the name is not parsed, and the args are passed as they are.
+
+### source
+
+`source path` reads a file of entish code into the program, as if its statements were written in place of the `source` statement.
+
+```sh
+source ~/.config/entish/git.ent     # its fns and lets are visible after this line
+source lib/util.ent                 # relative to the file this line is in
+```
+
+- Expanded before checking, so the file is checked with the program: its errors are compile errors that point into it.
+- The path must be literal (bare word, `'str'`, `"str"` without variables, `~/...`), so the file is known before anything runs. `source $f` is a compile error.
+- Only a statement at the top level of a file, `-c`, a REPL input or `eval`; `source` inside a fn, block or pipeline is a compile error. Its file is read once per run of the program that contains it.
+- A relative path is relative to the directory of the file containing the statement; at the REPL, in `-c`, stdin and `eval`, to the shell's cwd when the input is compiled, so a `cd` earlier in the same input does not change it.
+- A sourced file cannot define `fn source` (compile error): it would change what `source` means in the file that sources it.
+- A cycle (`a` sources `b` sources `a`) is a compile error.
+- At the REPL, running `source f` again re-reads `f`; its fns replace the old ones, and fns defined earlier that call them by name see the new definitions. That is the reload of REPL-driven development.
+- A missing file is a compile error; there is no optional `source`.
+- A `fn source` shadows it, like any builtin.
+
+### src
+
+`src $f` returns the source of a fn or lambda as written, a str: `fn add a b { $a + $b }` or `{ $n > 0 }`. Variables appear as written, not as their captured values. A builtin raises. It lets a fn report the code it was given:
+
+```sh
+fn check body {
+  if call $body { $nil } else {
+    let s = src $body
+    fail "check failed: $s"
+  }
+}
+check { $n > 0 }                    # check failed: { $n > 0 }
+```
+
+`src` only reads code. Text it returns can be run with `eval $s`, which gives back a lambda for a lambda's source; it is never spliced.
 
 ### explain
 
@@ -191,7 +233,7 @@ Compile errors only where the source alone makes the mistake certain:
 | `$xs \|> jq .` — an external right of `\|>` | `jq reads stdin, not a value: print $x \| jq` |
 | `$xs \| jq .`, `len $x \| cat` — an expression or a value-only builtin left of `\|` | `a value cannot be piped into \|; print it` |
 | `ls \| len` — a builtin other than a converter after `\|` | `len takes a value, not stdin: ls \| lines \|> len` |
-| `1 + 1`, `$f` as a statement that is not the value of its block | `unused value` |
+| `1 + 1`, `$f` as a statement that is not the value of its block, or the last statement of a script | `unused value` |
 
 Calls to user fns are never classified, so they are never errors here. Dropping a value or output is not an error either:
 
@@ -481,7 +523,7 @@ Precedence, high to low: `!`, `&&`, `||`. Short-circuit.
 
 ### Condition position
 
-An external in condition position does not raise on failure; failure is `false`.
+An external in condition position does not raise on failure; failure is `false`. A command killed by SIGINT (Ctrl+C) is not a failure here: it still raises, so `cmd || fallback` does not run the fallback on Ctrl+C.
 
 Condition position:
 - the condition of `if`
@@ -510,10 +552,50 @@ if $n > 1 && ends_with .go $f && grep -q TODO $f { print $f }
 A bash guard idiom fails loudly with a hint:
 
 ```
-$ test -f .env && source .env
+$ test -f .env && cat .env
 error: 'test -f .env' failed (exit 1)
   hint: to run only if it succeeds, use: if test -f .env { ... }
 ```
+
+## match
+
+`match` checks the shape of a value and takes it apart in one step. It runs the first arm whose pattern matches.
+
+```sh
+fn g ...args {
+  match $args {
+    []             => git status -sb
+    ['co' branch]  => git checkout $branch        # exactly 2 items; the second is $branch
+    ['l' ...rest]  => git log --oneline ...$rest
+    _              => git ...$args
+  }
+}
+
+match (curl -s $url | from_json) {
+  [status: 'ok' data: d]    => $d |> each { print $it[name] }
+  [status: 'error' msg: m]  => fail $m
+}
+```
+
+| pattern | matches |
+|---|---|
+| `_` | anything |
+| `name` | anything, binds `$name` |
+| `'lit'`, `"lit"`, `42` | an equal str or num |
+| `$v` | a value equal to `$v` (`$nil`, `$true` too) |
+| `[a b]`, `[]` | a list of exactly that length |
+| `[a ...rest]`, `[a ..._]` | a list of at least that length; the rest is bound to `$rest`, or dropped |
+| `[k: pat]` | a map with key `k` whose value matches `pat`; other keys are ignored, so `[:]` is any map |
+
+- `pattern if cond => body`: the arm runs only if the guard also holds. The guard is in condition position and sees the pattern's names.
+- A body is one expression or a `{ }` block, starting on the same line as `=>` (on the next line it could not be told apart from the next arm). It sees the pattern's names, which are not visible after the match. To give a fn, put it in a block: `=> { {|x| ... } }`.
+- Arms are separated by newlines or `;`.
+- No arm matches → raises `match: no arm matches <value>`. There is no silent fall-through.
+- Values of different types never match: `'1'` does not match `1`, and comparing them does not raise.
+- The value of a match is its arm's value, as with `if`. As a statement whose arms end in values that are dropped, it is `unused value`.
+- Compile errors: an arm after an unguarded `_` or `name` (unreachable), a name bound twice in a pattern, a bare word (`foo.txt`; a name binds, a str is quoted), `true`/`false`/`nil` (write `$true`), interpolation or `$( )` in a pattern, a match with no arms.
+- `match` cannot follow `|>`: it is a keyword, not a fn. Write `match $x { ... }` or `match (cmd | from_json) { ... }`.
+- No patterns for types (any str, any num); use a name and a guard.
 
 ## Pipes
 
@@ -578,6 +660,26 @@ fn  tag  → pure
 - A call that passes a fn value whose body is not known statically (`map $f`) is treated as impure.
 - Purity changes no semantics today. It is what later features can rely on: memoization of pure fns, a dry-run mode that evaluates only pure code, and a parallel `peach` that rejects bodies changing shell state (`cd`, `export`). Externals in `peach` are fine; they run in separate processes.
 
+### Values at the REPL
+
+After an input runs, the REPL shows every value the input produced and did not pass on, in order, each marked `▶`:
+
+- the value of each statement (not `$nil`)
+- the value of each stage before a `|` (`f | cat`, `f | lines`); `|` takes only its output
+
+```sh
+> [1 2] |> len
+▶ 2
+> fn f { [a: 1] }
+> f | cat > out.txt         # out.txt is empty; f's value went nowhere
+▶ [a: 1]
+```
+
+- Values are shown after the command ends, by the REPL itself (after the OSC 133 `D` mark), so they never reach a pipe, a redirect or `$( )`: there is no value→bytes conversion.
+- Only what was typed: values dropped inside a fn or lambda body (`fn g { f | cat; 2 }`) are not shown, nor statements of a `source`d file. Blocks of a typed `if` / `try` / `match` are typed.
+- A script shows nothing; its last statement is checked instead (`unused value`).
+- Other shells: elvish marks values with `▶` but writes them to stdout, and drops values sent into `|`; nushell renders the last value to stdout and converts values sent to externals by type; rash shows `Result N:`.
+
 ### `$_` at the REPL
 
 The last value printed at the REPL is `$_`.
@@ -634,12 +736,13 @@ try <block or $fn> catch <name> <block>
 - `catch` must follow the body's `}` on the same line, like `else`.
 - No `finally`: processes, fds and scope frames are cleaned up on error anyway.
 - Re-raise with `fail $e`.
+- Ctrl+C is not caught: a command killed by SIGINT and the shell's own interrupt pass through every `try` to the prompt. Otherwise a `try` in `retry` or inside `each` would take one Ctrl+C per attempt or item.
 - `fail $x` raises: a map is raised as is; any other value becomes `[cmd: $nil  code: $nil  signal: $nil  msg: $x  pos: ..]`.
 - At the REPL, a child killed by Ctrl+C returns to the prompt without a stack trace.
 
 ```sh
 try { go test ./... } catch e {
-    if $e[signal] != $nil { print "interrupted ($e[signal])"; exit 130 }
+    if $e[signal] != $nil { print "killed ($e[signal])"; exit 1 }
     print "tests failed, exit $e[code]"
     exit 1
 }
@@ -658,6 +761,10 @@ kw_stmt   = 'let' NAME '=' value
           | kw_expr
 kw_expr   = 'if' chain block { 'else' 'if' chain block } [ 'else' block ]
           | 'try' ( block | '$' NAME ) 'catch' NAME block
+          | 'match' chain '{' { arm ( NL | ';' ) } '}'
+arm       = pattern [ 'if' chain ] '=>' ( block | chain )
+pattern   = '_' | NAME | STR | NUM | '$' NAME { '[' idx ']' }
+          | '[' { pattern } [ '...' NAME ] ']' | '[' { KEY ':' pattern } ']' | '[:]'
 chain     = and { '||' and }
 and       = not { '&&' not }
 not       = '!' not | pipeline
@@ -703,7 +810,7 @@ The language is typed at a prompt, so everything must also fit on one line.
 - `;` separates statements everywhere: top level and inside blocks.
 - Blocks, lambdas, `if` / `else`, `try` / `catch` all fit on one line.
 - fns are called like commands: no parens, no commas.
-- At the REPL, an expression statement or fn call prints its value unless it is `$nil`. A `str` prints raw; other values print in entish literal syntax. The last printed value is `$_`.
+- At the REPL, an expression statement or fn call shows its value, marked `▶`, unless it is `$nil`. A `str` shows raw; other values in entish literal syntax. The last shown value is `$_`. See Values at the REPL.
 - `...(value)` spreads any list into args, not only `...$name`.
 - From another shell: `entish -c '...'`.
 
@@ -978,7 +1085,7 @@ Sources: `racket-rash/rash/scribblings/rash.scrbl`, `shell-pipeline/scribblings/
 
 | rash | lesson | entish | status |
 |---|---|---|---|
-| A line starting with `(` is Racket, anything else is a pipeline. `(if clang? 'clang 'gcc) -o prog prog.c` silently becomes a Racket expression. The author's TODO considers making it a syntax error. | Choosing the mode from the head token leaves no way to run a command whose name is computed. | `command $cc -o prog prog.c`. | applied |
+| A line starting with `(` is Racket, anything else is a pipeline. `(if clang? 'clang 'gcc) -o prog prog.c` silently becomes a Racket expression. The author's TODO considers making it a syntax error. | Choosing the mode from the head token leaves no way to run a command whose name is computed. | `^$cc -o prog prog.c`. | applied |
 | `$lower` is a lexical variable, `$UPPER` is an env variable. | Short to type; a fixed first-character rule, not guessing. Lowercase env names (`http_proxy`) need an escape. | Same rule; `$env:name` for any env name; uppercase `let` is a compile error. | applied |
 | Two value pipes: `\|>` gets a port, `\|>>` converts the port to a string. | Implicit bytes→value conversion needs extra operators when it has more than one meaning. | No implicit conversion: `\|>` takes only values; bytes become a value through `$( )` or a converter after `\|` (`\| lines`). | applied |
 | `\|> + 6` appends the piped value; `\|> + _ 6` places it with `_`. | An optional placeholder handles fns whose data argument is not last. | `\|>` always appends. A `_` placeholder would remove the data-last constraint for user fns. | proposed |
@@ -1025,7 +1132,6 @@ Not for now (may be added later):
 - floats
 - regex
 - builtins beyond the current list — added as needed
-- `match` (pattern matching) — design kept in Deferred designs
 
 ## Open decisions
 
@@ -1041,7 +1147,7 @@ From the lessons above:
 7. Resolve the external (PATH lookup) before evaluating its arguments.
 8. Terminal handling without job control: children stay in the shell's process group, the shell ignores SIGINT/SIGQUIT while a foreground child runs, TUI programs keep the tty.
 9. Never set `$SHELL` to entish; tools run POSIX code through it.
-10. Process substitution, e.g. `diff $<(cmd a) $<(cmd b)` giving `/dev/fd/N` paths.
+10. ~~Process substitution~~ — decided: the converter `as_file`, a temp file, instead of new syntax. `<(cmd)` would make `( )` mean output after `<` only and changes the meaning of `<($path)`; `<$(cmd)` is already a redirect from a computed path; `$<(cmd)` needed its paths kept to call args. A streaming form (pipes, e.g. a builtin that passes `/dev/fd/N` paths to a lambda) can be added if needed.
 
 From one-liners:
 
@@ -1050,9 +1156,13 @@ From one-liners:
 From removing fn kinds (see Output and values):
 
 12. "No value" is `$nil` (current), or a separate *void* that raises when used as a value. `$nil` keeps one concept and no runtime check; the cost is that `let x = ll` is silently `$nil`.
-13. `eval` source: keep the `'literal'` / `$var` restriction (current; it blocks `eval "rm $f"` injection) or drop it, now that eval no longer needs to know a kind before running.
+13. ~~`eval` source restricted to `'literal'` / `$var`~~ — decided: dropped. Binding the source to a variable first passed the same injection (`let s = "rm $f"; eval $s`), so the rule only added friction; values still go in safely as `$args`. A dynamic command name is `^$name`, not `eval`.
 14. Lint for the "user's responsibility" table: none (current), or warnings from best-effort inference that never change behavior (e.g. in `explain`).
 15. Stdin fallback: only converters (current), or every data-last builtin. Converters read stdin wherever their data arg is left out, not only right after `|`; a forgotten arg (`let xs = lines`) waits for input instead of being a compile error.
+16. What `try` catches. Now: everything except Ctrl+C, including bugs in the body: a type error (`$(stat -c %s $f) + 1` without `num`), an index out of range, `match` with no arm, `$nil` passed to an external. `let size = try { $(stat -c %s $f) + 1 } catch e { 0 }` is then always `0`, silently. Options:
+    - catch only command failures and `fail`; language errors pass through as bugs. The line is unclear: `from_json` on bad input or an index into outside data may be data errors the caller wants to catch.
+    - add a `kind` key to the error map (`'cmd'`, `'fail'`, `'type'`, ...) and keep catching everything; the handler decides.
+    - keep catching everything (current).
 
 ## Deferred designs
 
@@ -1068,25 +1178,3 @@ $(git ls-files) |> $count
 ```
 
 Deferred: a lambda already says it (`{|x| $x |> lines |> len }`), and `(` would gain a second meaning besides grouping.
-
-### match
-
-```
-match <value> {
-    <pattern> [if <cond>] => <stmt or block>
-    ...
-}
-```
-
-| pattern | matches |
-|---|---|
-| `_` | anything |
-| `name` | anything, binds `$name` |
-| `'lit'`, `42` | equal literal |
-| `$v` | equal to existing value |
-| `[a b ...rest]` | list; exact length unless `...rest` |
-| `[k: pat]` | map containing key `k` whose value matches `pat`; extra keys ok |
-
-- No arm matches → error.
-- Arms are separated by newline or `;`.
-- Adds keyword `match` and the contextual guard `if`.

@@ -81,6 +81,36 @@ Rational by default (from raku)
     0.3333
 
 
+Pattern matching
+----------------
+
+    # check the shape of a value and take it apart; no arm matching raises
+    $ fn g ...args {
+        match $args {
+          []             => git status -sb
+          ['co' branch]  => git checkout $branch
+          ['l' ...rest]  => git log --oneline ...$rest
+          _              => git ...$args
+        }
+      }
+    $ match [status: 'ok' n: 3] { [status: 'ok' n: n] if $n > 0 => $n; _ => 0 }
+    3
+
+
+Code as text: source, src
+-------------------------
+
+    # source: a literal path, read and checked with the program
+    $ source ~/.config/entish/git.ent
+    # at the REPL, run it again after editing the file: fns are redefined
+
+    # src: the source of a fn or lambda, as written
+    $ fn check body { if call $body { $nil } else { let s = src $body; fail "check failed: $s" } }
+    $ let n = 0
+    $ check { $n > 0 }
+    error: check failed: { $n > 0 }
+
+
 Multiline strings (from zig)
 ----------------------------
 

@@ -28,3 +28,5 @@ fn fzf_file { try { $(fd --hidden --type f -0 | fzf --read0 --height=50% --min-h
 bind ctrl-t { fzf_file }
 
 bind alt-q { [input: "shq add $it"] }
+
+fn x v {cd $(scratch $v)}

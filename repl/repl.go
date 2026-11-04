@@ -20,8 +20,9 @@ type Editor interface {
 type Language interface {
 	// NeedsMore reports whether src is unfinished and another line is needed.
 	NeedsMore(src string) bool
-	// Eval runs src and returns text to print ("" for nothing).
-	Eval(src string) (string, error)
+	// Eval runs src and returns the values to show, as text, even when it
+	// fails partway.
+	Eval(src string) ([]string, error)
 }
 
 // ExitCoder is implemented by an error that ends the session (exit).
@@ -69,9 +70,14 @@ func Run(ed Editor, lang Language, cfg Config) int {
 		}
 		ed.AddHistory(src)
 		call(cfg.BeforeEval)
-		out, err := lang.Eval(src)
+		vals, err := lang.Eval(src)
 		if cfg.AfterEval != nil {
 			cfg.AfterEval(err)
+		}
+		// Values are shown after the command, so they never reach a pipe or
+		// a file; ▶ tells them from output.
+		for _, v := range vals {
+			fmt.Fprintln(cfg.Out, "▶ "+strings.TrimSuffix(v, "\n"))
 		}
 		if err != nil {
 			var ec ExitCoder
@@ -79,10 +85,6 @@ func Run(ed Editor, lang Language, cfg Config) int {
 				return ec.ExitCode()
 			}
 			fmt.Fprintln(cfg.Err, err)
-			continue
-		}
-		if out != "" {
-			fmt.Fprintln(cfg.Out, strings.TrimSuffix(out, "\n"))
 		}
 	}
 }

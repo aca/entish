@@ -40,6 +40,7 @@ type Closure struct {
 	Params []string
 	Rest   string
 	Body   *Block
+	Src    string // as written, for src
 	Env    *Env
 }
 

@@ -26,6 +26,7 @@ type ioCtx struct {
 	in       io.Reader
 	out, err io.Writer
 	onStart  func(*os.Process) // called for each external started (stream cleanup)
+	drop     func(Value)       // REPL: a value the typed input drops, to show; nil inside fns
 }
 
 // Env is an immutable chain of variable bindings. A node with fns is a block
@@ -53,6 +54,8 @@ type Interp struct {
 	trace  io.Writer
 	traceM sync.Mutex
 	envMu  sync.RWMutex // env is also read by background work (completion, direnv)
+	tmpMu  sync.Mutex
+	tmps   []string // files made by as_file, removed when the input ends
 }
 
 func New(o Options) *Interp {
@@ -208,35 +211,46 @@ func (in *Interp) NeedsMore(src string) bool {
 	return strings.HasPrefix(last, `\\`) || strings.HasPrefix(last, `$\\`)
 }
 
-// Eval runs one REPL input and returns the display form of its value, or
-// "" when there is nothing to print.
-func (in *Interp) Eval(src string) (string, error) {
-	v, printable, err := in.run(src, "", false)
-	if err != nil || !printable {
-		return "", err
+// Eval runs one REPL input and returns the display forms of the values it
+// produced and did not pass on, in order: those of its statements and of
+// pipeline stages not followed by |>. Values dropped inside fns are not
+// shown.
+func (in *Interp) Eval(src string) ([]string, error) {
+	vals, err := in.run(src, "", false)
+	out := make([]string, len(vals))
+	for i, v := range vals {
+		out[i] = display(v)
 	}
-	return display(v), nil
+	return out, err
 }
 
 // RunScript runs a whole program, e.g. a file or -c.
 func (in *Interp) RunScript(src, file string) error {
-	_, _, err := in.run(src, file, true)
+	_, err := in.run(src, file, true)
 	return err
 }
 
 // Check parses and checks a whole program without running it.
 func (in *Interp) Check(src, file string) error {
 	prog, err := parse(src, file)
+	if err == nil {
+		err = in.expandSource(prog, in.sourceStack(file))
+	}
 	if err != nil {
 		return err
 	}
 	return check(prog, in.topFns, nil, true)
 }
 
-func (in *Interp) run(src, file string, script bool) (Value, bool, error) {
+// run runs a program. At the REPL (!script) it returns the values to show.
+func (in *Interp) run(src, file string, script bool) ([]Value, error) {
+	defer in.removeTmps()
 	prog, err := parse(src, file)
+	if err == nil {
+		err = in.expandSource(prog, in.sourceStack(file))
+	}
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
 	var vars []string
 	for e := in.top; e != nil; e = e.parent {
@@ -245,26 +259,43 @@ func (in *Interp) run(src, file string, script bool) (Value, bool, error) {
 		}
 	}
 	if err := check(prog, in.topFns, vars, script); err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	var last Value
-	printable := false
+	var shown []Value
+	var mu sync.Mutex // stream producers drop values from their own goroutines
+	show := func(v Value) {
+		mu.Lock()
+		shown = append(shown, v)
+		mu.Unlock()
+	}
 	for _, st := range prog.Stmts {
 		if in.intr.Swap(false) {
-			return nil, false, interrupted(prog.Pos)
+			return shown, interrupted(prog.Pos)
 		}
-		v, next, err := in.execStmt(st, in.top, in.root, in.std, false)
+		io := in.std
+		typed := false // typed at the REPL, not a statement of a sourced file
+		switch st := st.(type) {
+		case *ExprStmt:
+			typed = st.X.pos().File == file
+		case *LetStmt:
+			typed = st.Pos.File == file
+		}
+		if !script && typed {
+			io.drop = show
+		}
+		v, next, err := in.execStmt(st, in.top, in.root, io, false)
 		if err != nil {
-			return nil, false, err
+			return shown, err
 		}
 		in.top = next
 		if fs, ok := st.(*FnStmt); ok {
 			in.topFns[fs.Def.Name] = fs.Def
 		}
-		_, ok := st.(*ExprStmt)
-		last, printable = v, ok && v != nil
+		if _, ok := st.(*ExprStmt); ok && !script && typed && v != nil {
+			show(v)
+		}
 	}
-	return last, printable, nil
+	return shown, nil
 }
 
 func (in *Interp) abs(p string) string {
@@ -305,6 +336,7 @@ func lookupFn(env *Env, name string) *Closure {
 type Raise struct {
 	Val   Value
 	cause error
+	intr  bool // Ctrl+C: try does not catch it
 }
 
 func (r *Raise) Unwrap() error { return r.cause }
@@ -363,7 +395,7 @@ func errMap(pos Pos, cmd, msg string, code *int, sig string) *Map {
 func raisef(pos Pos, msg string) *Raise { return &Raise{Val: errMap(pos, "", msg, nil, "")} }
 
 func interrupted(pos Pos) *Raise {
-	return &Raise{Val: errMap(pos, "", "interrupted", nil, "SIGINT")}
+	return &Raise{Val: errMap(pos, "", "interrupted", nil, "SIGINT"), intr: true}
 }
 
 // wrap turns a plain error from a builtin into a Raise at pos.

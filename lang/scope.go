@@ -1,5 +1,7 @@
 package lang
 
+import "slices"
+
 // Variables are lexically scoped and resolved before running: a $name must
 // be bound by an enclosing let (earlier in the same or an outer block), a fn
 // or lambda param, or a catch. Callers' variables are never visible, and a
@@ -84,6 +86,18 @@ func (c *checker) vexpr(e Expr, sc *vscope) {
 	case *TryExpr:
 		c.vexpr(e.Body, sc)
 		c.vblock(e.Handler, sc.add(e.Name))
+	case *MatchExpr:
+		c.vexpr(e.X, sc)
+		for _, arm := range e.Arms {
+			for _, v := range patVars(arm.Pat) {
+				c.vref(v, sc) // a $v in a pattern is an outer variable
+			}
+			asc := sc.add(c.patBinds(arm.Pat)...)
+			if arm.Guard != nil {
+				c.vexpr(arm.Guard, asc)
+			}
+			c.vblock(arm.Body, asc)
+		}
 	case *BlockExpr:
 		c.vblock(e.B, sc)
 	case *WordExpr:
@@ -159,4 +173,83 @@ func (c *checker) vref(v *VarRef, sc *vscope) {
 	default:
 		c.errorf(v.Pos, "undefined variable $%s", v.Name)
 	}
+}
+
+// patBinds is the names a pattern binds; binding one twice is an error.
+func (c *checker) patBinds(p Pattern) []string {
+	var names []string
+	var walk func(Pattern)
+	add := func(pos Pos, name string) {
+		if slices.Contains(names, name) {
+			c.errorf(pos, "$%s is bound twice in this pattern", name)
+		}
+		names = append(names, name)
+	}
+	walk = func(p Pattern) {
+		switch p := p.(type) {
+		case *BindPat:
+			add(p.Pos, p.Name)
+		case *ListPat:
+			for _, x := range p.Items {
+				walk(x)
+			}
+			if p.Rest != "" && p.Rest != "_" {
+				add(p.Pos, p.Rest)
+			}
+		case *MapPat:
+			for _, x := range p.Vals {
+				walk(x)
+			}
+		}
+	}
+	walk(p)
+	return names
+}
+
+// patVars is the $v patterns in p.
+func patVars(p Pattern) []*VarRef {
+	switch p := p.(type) {
+	case *VarPat:
+		return []*VarRef{p.V}
+	case *ListPat:
+		var vs []*VarRef
+		for _, x := range p.Items {
+			vs = append(vs, patVars(x)...)
+		}
+		return vs
+	case *MapPat:
+		var vs []*VarRef
+		for _, x := range p.Vals {
+			vs = append(vs, patVars(x)...)
+		}
+		return vs
+	}
+	return nil
+}
+
+// irrefutable: p matches every value.
+func irrefutable(p Pattern) bool {
+	switch p.(type) {
+	case *AnyPat, *BindPat:
+		return true
+	}
+	return false
+}
+
+func patPos(p Pattern) Pos {
+	switch p := p.(type) {
+	case *AnyPat:
+		return p.Pos
+	case *BindPat:
+		return p.Pos
+	case *LitPat:
+		return p.Pos
+	case *VarPat:
+		return p.V.Pos
+	case *ListPat:
+		return p.Pos
+	case *MapPat:
+		return p.Pos
+	}
+	panic("unknown pattern")
 }

@@ -2,6 +2,16 @@
 
 entish is a non-POSIX shell with a strict, functional language, written in Go. README.md describes what is implemented. DESIGN.md is the design spec and records decisions, including deferred and rejected ones. REVIEW.md lists known gotchas and tradeoffs.
 
+Copy the best behavior from modern shells.
+
+- /home/rok/src/github.com/aca/elvish
+- es-shell /home/rok/src/github.com/wryun/es-shell
+- nushell
+- schemesh /home/rok/src/github.com/cosmos72/schemesh
+- rash /home/rok/src/github.com/willghatch/racket-rash
+
+
+
 ## Commands
 
 ```sh
@@ -50,7 +60,7 @@ lang/               the language
 - `$lower` is a lexical variable. `$Upper` and `$env:x` are env vars.
 - Errors raised by commands are `*Raise` holding a plain error map (`cmd code signal msg pos`).
 - Each operator takes one channel: `|` stdout → stdin, `|>` value → last arg, `$( )` stdout as a str, `( )` the value. Stages joined by `|` form a segment whose value is its last stage's (`exec.go`).
-- In "condition position", a failing command yields `false` instead of raising: `if` conditions, the left of `||`, the operand of `!`. A call's `$nil` counts as success, its `$true`/`$false` as itself; any other operand must be a bool (`truth` in `eval.go`).
+- In "condition position", a failing command yields `false` instead of raising (not one killed by SIGINT; `try` does not catch Ctrl+C either): `if` conditions, the left of `||`, the operand of `!`. A call's `$nil` counts as success, its `$true`/`$false` as itself; any other operand must be a bool (`truth` in `eval.go`).
 
 **Streaming (`stream.go`)**
 - In `cmd | lines`, the stages before a stdin converter run concurrently and are passed to it as a `*Stream`.
@@ -61,7 +71,7 @@ lang/               the language
 **Builtins (`builtins.go`)**
 - Flags on each builtin:
   - `Data`: takes its data as the last arg, so it belongs after `|>`.
-  - `Stdin`: a converter (`lines lines0 from_json`); with its data arg left out it reads stdin, like `cat`. After `|` the checker marks it (`call.stdin`) so the stages before it are passed as a stream.
+  - `Stdin`: a converter (`lines lines0 from_json as_file`); with its data arg left out it reads stdin, like `cat`. After `|` the checker marks it (`call.stdin`) so the stages before it are passed as a stream.
   - `Value`: only returns a value, so it cannot go left of `|`. `Void`: returns `$nil`, so it cannot be used as a value.
   - `Lazy`: accepts streams and seqs.
   - `Min`/`Max`: arity.
@@ -80,7 +90,7 @@ lang/               the language
 
 The user cares strongly about these; check DESIGN.md before changing semantics.
 
-- Minimal keywords (currently `let fn if else try catch`) and minimal builtins.
+- Minimal keywords (currently `let fn if else try catch match`) and minimal builtins.
 - No implicit conversions:
   - Values pass between fns only via `|>`; `print` and `to_json` are the only ways from a value to bytes.
   - Bytes pass between commands only via `|`.

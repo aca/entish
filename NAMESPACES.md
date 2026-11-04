@@ -23,7 +23,7 @@ print $f     # 2  — 값 공간: let이 $f를 가림
 
 | 머리 | 뜻 |
 |---|---|
-| keyword (`let fn if else try catch`) | keyword 형식 |
+| keyword (`let fn if else try catch match`) | keyword 형식 |
 | `^name` | PATH의 external. fn을 건너뜀 |
 | `/`가 들어간 단어 (`./x`, `/bin/x`) | 경로로 지정한 external |
 | fn 이름 | 사용자 fn |

@@ -19,7 +19,7 @@ type Error struct {
 
 func (e *Error) Error() string { return e.Pos.String() + ": " + e.Msg }
 
-var keywords = map[string]bool{"let": true, "fn": true, "if": true, "else": true, "try": true, "catch": true}
+var keywords = map[string]bool{"let": true, "fn": true, "if": true, "else": true, "try": true, "catch": true, "match": true}
 
 type wordMode int
 
@@ -34,6 +34,7 @@ const (
 type ctx struct {
 	cond  bool
 	index bool // inside $xs[...]: ':' ends a word
+	guard bool // inside a match guard: '=>' ends it
 }
 
 type parser struct {
@@ -294,6 +295,7 @@ func (p *parser) letStmt() Stmt {
 
 func (p *parser) fnDef() *FnDef {
 	d := &FnDef{Pos: p.here()}
+	start0 := p.pos
 	p.pos += 2
 	p.mark(p.pos-2, SpanKeyword)
 	p.skipSpace()
@@ -315,6 +317,7 @@ func (p *parser) fnDef() *FnDef {
 	p.lambdas = append(p.lambdas, nil) // $it never refers past a fn body
 	d.Body = p.block()
 	p.lambdas = p.lambdas[:len(p.lambdas)-1]
+	d.Src = string(p.src[start0:p.pos])
 	return d
 }
 
@@ -458,6 +461,8 @@ func (p *parser) stage(c ctx) Expr {
 		return p.ifExpr()
 	case "try":
 		return p.tryExpr()
+	case "match":
+		return p.matchExpr()
 	case "let", "fn":
 		p.fail(kw + " must start a statement")
 	case "else", "catch":
@@ -531,6 +536,15 @@ func (p *parser) call(c ctx, caret bool) *Call {
 	start := p.pos
 	if caret {
 		p.pos++
+		if p.peek() == '$' {
+			v, ok := singleVar(p.word(modeArg, c))
+			if !ok {
+				p.fail("^ takes a command name or one $var: ^$cmd args")
+			}
+			call.HeadVar = v
+			p.args(call, c)
+			return call
+		}
 	}
 	name, ok := p.peekCommandName()
 	if !ok {
@@ -571,6 +585,8 @@ func (p *parser) callEnd(c ctx) bool {
 		p.fail("'&' is not supported (no background jobs)")
 	case '{':
 		return c.cond
+	case '=':
+		return c.guard && p.at(1) == '>'
 	}
 	return false
 }
@@ -743,6 +759,204 @@ func (p *parser) tryExpr() Expr {
 	p.skipSpace()
 	e.Handler = p.block()
 	return e
+}
+
+// matchExpr parses `match value { pattern [if guard] => body ... }`. Arms
+// are separated by newlines or ';'. A body is a block or one expression.
+func (p *parser) matchExpr() Expr {
+	e := &MatchExpr{P: p.here()}
+	p.pos += 5
+	p.mark(p.pos-5, SpanKeyword)
+	p.skipSpace()
+	p.checkMore("match")
+	if p.peek() == '{' {
+		p.fail("match takes its value first: match $x { ... }; it cannot follow |>")
+	}
+	e.X = p.chain(ctx{cond: true})
+	p.skipSpace()
+	if p.peek() != '{' {
+		p.fail("expected '{' after the match value")
+	}
+	p.pos++
+	for {
+		p.skipSpaceNL()
+		for p.peek() == ';' {
+			p.pos++
+			p.skipSpaceNL()
+		}
+		if p.eof() {
+			p.incomplete("missing '}'")
+		}
+		if p.peek() == '}' {
+			p.pos++
+			break
+		}
+		e.Arms = append(e.Arms, p.matchArm())
+		p.endStmt('}')
+	}
+	if len(e.Arms) == 0 {
+		panic(&Error{Pos: e.P, Msg: "match needs at least one arm: pattern => body"})
+	}
+	return e
+}
+
+func (p *parser) matchArm() *MatchArm {
+	arm := &MatchArm{Pat: p.pattern()}
+	p.skipSpace()
+	if p.keyword() == "if" {
+		p.pos += 2
+		p.mark(p.pos-2, SpanKeyword)
+		p.skipSpace()
+		p.checkMore("if")
+		arm.Guard = p.chain(ctx{guard: true})
+		p.skipSpace()
+	}
+	if p.eof() {
+		p.incomplete("expected => after the pattern")
+	}
+	if !p.hasPrefix("=>") {
+		p.fail("expected => after the pattern")
+	}
+	p.pos += 2
+	p.mark(p.pos-2, SpanKeyword)
+	p.skipSpace()
+	// On the next line, a body could not be told apart from the next arm.
+	if c := p.peek(); c == 0 || c == '\n' || c == '}' || c == ';' {
+		p.fail("expected a body on the same line after =>; for more lines use a block: => { ... }")
+	}
+	if p.peek() == '{' {
+		save := p.pos
+		p.pos++
+		p.skipSpace()
+		if p.peek() == '|' && p.at(1) != '|' && p.at(1) != '>' {
+			p.fail("the { } after => is a block; to give a fn, put it inside one: => { {|x| ... } }")
+		}
+		p.pos = save
+		arm.Body = p.block()
+		return arm
+	}
+	pos := p.here()
+	arm.Body = &Block{Pos: pos, Stmts: []Stmt{&ExprStmt{X: p.chain(ctx{})}}}
+	return arm
+}
+
+// pattern parses one match pattern.
+func (p *parser) pattern() Pattern {
+	pos := p.here()
+	switch ch := p.peek(); {
+	case ch == '[':
+		return p.collectionPattern()
+	case ch == '\'':
+		return &LitPat{Pos: pos, Val: p.rawString().(*StrAtom).Parts[0].Lit}
+	case ch == '"':
+		s := p.interpString().(*StrAtom)
+		var b strings.Builder
+		for _, part := range s.Parts {
+			if part.Var != nil {
+				panic(&Error{Pos: pos, Msg: "a pattern string cannot interpolate; match a variable's value with $" + part.Var.Name})
+			}
+			b.WriteString(part.Lit)
+		}
+		return &LitPat{Pos: pos, Val: b.String()}
+	case ch == '$':
+		a := p.dollar()
+		v, ok := a.(*VarRef)
+		if !ok {
+			panic(&Error{Pos: pos, Msg: "a pattern cannot run code; bind the value with let first"})
+		}
+		return &VarPat{V: v}
+	}
+	start := p.pos
+	for !isWordEnd(p.peek()) && p.peek() != '[' && p.peek() != '{' && !p.hasPrefix("=>") {
+		p.pos++
+	}
+	w := string(p.src[start:p.pos])
+	switch {
+	case w == "":
+		if p.eof() {
+			p.incomplete("expected a pattern")
+		}
+		p.fail("expected a pattern")
+	case w == "_":
+		return &AnyPat{Pos: pos}
+	case isNumber(w):
+		return &LitPat{Pos: pos, Val: numLit(w)}
+	case reservedVars[w] && w != "it":
+		p.failAt(start, fmt.Sprintf("%s in a pattern would bind a variable named %s; to match the value write $%s", w, w, w))
+	}
+	if strings.IndexFunc(w, func(c rune) bool { return !isIdent(c) }) >= 0 {
+		p.failAt(start, fmt.Sprintf("bare word %s in a pattern: quote it, '%s'; a plain name binds a variable", w, w))
+	}
+	p.pos = start
+	return &BindPat{Pos: pos, Name: p.varName("a pattern")}
+}
+
+// collectionPattern parses [a b ...rest], [k: pat] or [:].
+func (p *parser) collectionPattern() Pattern {
+	pos := p.here()
+	p.pos++
+	p.skipSpaceNL()
+	if p.hasPrefix(":]") {
+		p.pos += 2
+		return &MapPat{Pos: pos}
+	}
+	var list *ListPat
+	var m *MapPat
+	for {
+		p.skipSpaceNL()
+		if p.eof() {
+			p.incomplete("missing ']'")
+		}
+		if p.peek() == ']' {
+			p.pos++
+			break
+		}
+		if key, ok := p.mapKey(); ok {
+			if list != nil {
+				p.fail("mixed list items and map entries")
+			}
+			if m == nil {
+				m = &MapPat{Pos: pos}
+			}
+			p.skipSpaceNL()
+			if p.peek() == ']' {
+				p.fail("missing pattern for key " + key)
+			}
+			if slices.Contains(m.Keys, key) {
+				p.fail("duplicate key " + key + " in pattern")
+			}
+			m.Keys = append(m.Keys, key)
+			m.Vals = append(m.Vals, p.pattern())
+			continue
+		}
+		if m != nil {
+			p.fail("mixed list items and map entries")
+		}
+		if list == nil {
+			list = &ListPat{Pos: pos}
+		}
+		if list.Rest != "" {
+			p.fail("...rest must be the last item of a list pattern")
+		}
+		if p.hasPrefix("...") {
+			p.pos += 3
+			if p.peek() == '_' && isWordEnd(p.at(1)) {
+				p.pos++
+				list.Rest = "_"
+			} else {
+				list.Rest = p.varName("...")
+			}
+			continue
+		}
+		list.Items = append(list.Items, p.pattern())
+	}
+	if m != nil {
+		return m
+	}
+	if list == nil {
+		return &ListPat{Pos: pos}
+	}
+	return list
 }
 
 // ---- words
@@ -1161,6 +1375,7 @@ func (p *parser) group() Atom {
 
 func (p *parser) lambda() Atom {
 	la := &LambdaAtom{Pos: p.here()}
+	start := p.pos
 	p.pos++
 	// {|x| ...} and { |x| ... } are the same: no statement starts with '|'.
 	save := p.pos
@@ -1178,6 +1393,7 @@ func (p *parser) lambda() Atom {
 	p.lambdas = p.lambdas[:len(p.lambdas)-1]
 	p.expect('}')
 	la.Body = b
+	la.Src = string(p.src[start:p.pos])
 	if la.usesIt {
 		la.Params = []string{"it"} // a block that uses $it takes one param
 	}

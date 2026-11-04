@@ -45,11 +45,15 @@ func (in *Interp) startStream(stages []Expr, env *Env, io ioCtx, carry Value, ha
 	sio.out = pw
 	sio.onStart = s.addProc
 	go func() {
+		var v Value
 		var err error
 		if len(stages) > 1 {
-			_, err = in.bytePipeline(stages, env, sio, carry, has, false)
+			v, err = in.bytePipeline(stages, env, sio, carry, has, false)
 		} else {
-			_, err = in.stage(stages[0], env, sio, carry, has, false)
+			v, err = in.stage(stages[0], env, sio, carry, has, false)
+		}
+		if err == nil && v != nil && sio.drop != nil {
+			sio.drop(v) // only its output went to the converter
 		}
 		pw.Close()
 		s.done <- err

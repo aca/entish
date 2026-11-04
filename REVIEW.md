@@ -148,7 +148,7 @@ DESIGN.md "Open decisions"의 번호를 같이 적음.
 | # | 질문 | 현재 | 대안과 비용 |
 |---|---|---|---|
 | D-1 (12) | "값 없음"을 `$nil`과 구분된 void로 둘지 | `$nil`로 합침 | void는 값으로 쓰는 순간 에러가 나서 A-1을 근본적으로 막음. 대신 런타임 검사와 개념이 하나 늘어남 |
-| D-2 (13) | `eval` 소스를 `'literal'` / `$var`로 제한할지 | 제한함 | 제한하는 원래 이유(소스의 종류를 실행 전에 알기)는 사라졌음. 지금은 `eval "rm $f"` 같은 주입을 막는 역할만 남음 |
+| D-2 (13) | ~~`eval` 소스를 `'literal'` / `$var`로 제한할지~~ | 결정: 제한 없앰 | `let s = "rm $f"; eval $s`로 같은 주입이 통과해서 제한은 불편만 줬음. 이름만 동적인 명령은 `^$name`으로 실행 |
 | D-3 (14) | "user's responsibility" 표의 실수에 lint를 붙일지 | 없음 | 추론을 최선 노력으로만 하고 동작은 절대 바꾸지 않는 경고. `explain`에 넣을 수 있음 |
 | D-4 (15) | stdin을 읽는 규칙(인자를 빼면 stdin)의 범위 | 변환 builtin(`lines lines0 from_json`)만 | 모든 Data builtin으로 넓히면 `ls \| len`이 파일 개수가 아니라 글자 수를 셈 |
 | D-5 | 조건에서 `( )` 안의 호출도 `$nil`을 성공으로 볼지 (B-2) | 식으로 취급 → 에러 | 성공으로 보면 괄호가 의미를 바꾸지 않지만, "식은 bool이어야 한다" 규칙에 예외가 생김 |
@@ -158,6 +158,54 @@ DESIGN.md "Open decisions"의 번호를 같이 적음.
 | D-9 | 슬라이스 공유, tail call (C-1) | 복사함, TCO 없음 | 슬라이스는 몇 줄 수정. TCO는 `execBlock` 구조 변경 필요 |
 
 DESIGN.md Open decisions 1–11(숫자 표기, `ref`, `_` placeholder, 명령별 성공 코드, 터미널 처리, process substitution, `peach` 등)도 아직 미결정.
+
+### 0.3 `match` / `source` / `src` 추가 후 리뷰
+
+모두 실행해서 확인함.
+
+#### A-1. map 패턴의 `name`이 `$nil` 값에도 맞음
+
+error map은 `cmd code signal msg pos` 키가 항상 있고, 해당 없으면 값이 `$nil`. 그래서 아래 첫 arm은 모든 에러에 맞음.
+
+```sh
+try { ^false } catch e {
+  match $e {
+    [signal: s] => print "killed by $s"     # signal이 $nil이어도 맞음
+    _           => print other
+  }
+}
+```
+
+`[signal: $nil] => ...`를 먼저 두거나 guard(`[signal: s] if $s != $nil`)를 써야 함. 대안: `name`이 `$nil`에는 맞지 않게 하기(규칙에 예외가 생김), 또는 error map에서 `$nil`인 키를 빼기(error map 형식이 바뀜).
+
+#### B-1. `source`는 builtin 이름이지만 문법처럼 동작함
+
+- 컴파일 시점에 펼쳐지므로 top-level 문장에서만 쓸 수 있음. `test -f x && source x`, `if ... { source x }`는 compile error. 선택적 source(`~/.entrc.local`이 있으면)가 불가능함.
+- 경로는 컴파일할 때 정해짐. `cd lib; source b.ent`를 한 입력에 쓰면 `cd` 전의 디렉터리 기준.
+- 소스된 fn도 프로그램 전체로 hoist됨. `fa; source lib.ent`는 검사를 통과하고 실행 때 `fn fa is not defined yet`. `lib.ent`의 `fn ls`는 같은 파일 앞쪽의 `ls` 호출도 가져감. 같은 파일 안의 `fn`과 같은 규칙이지만 파일을 넘으면 더 놀라움.
+- 두 파일이 같은 fn을 정의하면 checker는 마지막 정의로 arity를 보고, 실행은 마지막으로 실행된 정의를 씀(이전부터 있던 문제, `source`로 흔해짐).
+- 하이라이터는 `source`를 펼치지 않아서, 같은 입력 안에서는 소스된 fn이 external 색으로 보임.
+- `main.go`가 내장 config를 `"config.ent"`라는 이름으로 실행함. 거기서 상대 경로 `source`를 쓰면 cwd 기준이 됨.
+
+#### B-2. `source`와 `src`의 이름이 비슷함
+
+하나는 파일을 읽어 넣고, 하나는 fn의 소스 텍스트를 돌려줌. 대안: `src` → `source_of` 또는 `code_of`.
+
+#### B-3. `match`는 `|>` 뒤에 올 수 없음
+
+data-last fn들과 달리 `$x |> match { ... }`는 compile error(hint 있음). `|>` 오른쪽은 호출이라는 규칙을 지키려는 것. 허용하면 편하지만 그 규칙에 예외가 생김.
+
+#### B-4. `match`가 키워드가 됨
+
+`let match`, 이름이 `match`인 param, `match`라는 external(`^match`로 우회)이 이제 compile error. 저장소 안에서는 충돌 없음.
+
+#### B-5. `=>` 뒤의 `{`는 항상 block
+
+다른 곳에서는 `{ ... }`가 lambda 값일 수 있지만 arm 본문에서는 block. `=> {|x| ...}`는 hint와 함께 에러, `=> { {|x| ...} }`로 써야 함.
+
+#### C-1. `Src`가 중첩된 lambda마다 복사됨
+
+fn 안의 lambda는 fn의 소스 일부를 따로 문자열로 가짐. 깊이 × 크기만큼 메모리를 씀. 오프셋으로 바꾸면 해결되지만 지금 규모에서는 문제없음.
 
 ---
 

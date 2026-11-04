@@ -97,6 +97,17 @@ func (c *checker) expr(e Expr, s *fnScope) {
 	case *TryExpr:
 		c.expr(e.Body, s)
 		c.block(e.Handler, s)
+	case *MatchExpr:
+		c.expr(e.X, s)
+		for _, arm := range e.Arms {
+			for _, v := range patVars(arm.Pat) {
+				c.atom(v, s)
+			}
+			if arm.Guard != nil {
+				c.expr(arm.Guard, s)
+			}
+			c.block(arm.Body, s)
+		}
 	case *BlockExpr:
 		c.block(e.B, s)
 	case *WordExpr:
@@ -106,10 +117,10 @@ func (c *checker) expr(e Expr, s *fnScope) {
 
 func (c *checker) call(e *Call, s *fnScope) {
 	switch {
+	case e.Caret: // ^name or ^$name
+		e.target = tExternal
 	case e.HeadVar != nil:
 		e.target = tVar
-	case e.Caret:
-		e.target = tExternal
 	default:
 		if d := s.lookup(e.Name); d != nil {
 			e.target, e.fn = tFn, d
@@ -119,7 +130,15 @@ func (c *checker) call(e *Call, s *fnScope) {
 			case "call":
 				c.callBuiltin(e)
 			case "eval":
-				c.evalBuiltin(e)
+				if len(e.Args) == 0 {
+					c.errorf(e.P, "eval takes its source as its first arg: eval 'rm ...$args' $f")
+				}
+			case "source":
+				c.errorf(e.P, "source must be a statement at the top level of a file or input: source path")
+			case "as_file":
+				if len(e.Args) > 0 {
+					c.errorf(e.P, "as_file reads stdin, not a value: cmd | as_file")
+				}
 			}
 		} else {
 			e.target = tExternal
@@ -150,42 +169,6 @@ func (c *checker) callBuiltin(e *Call) {
 		return
 	}
 	e.Name, e.HeadVar, e.Args, e.target, e.builtin = "", v, nil, tVar, nil
-}
-
-// evalBuiltin checks that the source of eval is a literal or a variable:
-// values go in as $args, never spliced into the code.
-func (c *checker) evalBuiltin(e *Call) {
-	if len(e.Args) == 0 || !pureSource(e.Args[0]) {
-		c.errorf(e.P, "eval takes its source first, as a 'literal' or a $var; pass values as args: eval 'rm ...$args' $f")
-	}
-}
-
-func pureSource(w *Word) bool {
-	if len(w.Parts) != 1 {
-		return false
-	}
-	noVars := func(parts []StrPart) bool {
-		for _, p := range parts {
-			if p.Var != nil {
-				return false
-			}
-		}
-		return true
-	}
-	switch a := w.Parts[0].(type) {
-	case *StrAtom:
-		return noVars(a.Parts)
-	case *MLAtom:
-		for _, l := range a.Lines {
-			if !noVars(l) {
-				return false
-			}
-		}
-		return true
-	case *VarRef:
-		return len(a.indexExprs()) == 0
-	}
-	return false
 }
 
 func (c *checker) word(w *Word, s *fnScope) {
@@ -247,6 +230,12 @@ func endsInValue(e Expr) bool {
 		return blockEndsInValue(e.Then) || e.Else != nil && endsInValue(e.Else)
 	case *TryExpr:
 		return endsInValue(e.Body) || blockEndsInValue(e.Handler)
+	case *MatchExpr:
+		for _, arm := range e.Arms {
+			if blockEndsInValue(arm.Body) {
+				return true
+			}
+		}
 	case *BlockExpr:
 		return blockEndsInValue(e.B)
 	}
@@ -317,21 +306,16 @@ func (c *checker) checkBlock(b *Block, top bool) {
 			c.blockNeedElse(st.Def.Body) // the last statement is the return value
 			c.checkBlock(st.Def.Body, false)
 		case *ExprStmt:
-			if i < len(b.Stmts)-1 && endsInValue(st.X) {
+			c.checkExpr(st.X)
+			if (i < len(b.Stmts)-1 || top) && endsInValue(st.X) {
 				c.unused(st.X)
 			}
-			if top {
-				if we, ok := st.X.(*WordExpr); ok && isLiteralWord(we.W) {
-					c.errorf(we.W.Pos, "unused value")
-				}
-			}
-			c.checkExpr(st.X)
 		}
 	}
 }
 
-// unused reports a value statement that is not the last of its block: its
-// value would be dropped silently.
+// unused reports a value statement that is not the last of its block, or the
+// last of a script: its value would be dropped silently.
 func (c *checker) unused(e Expr) {
 	if we, ok := e.(*WordExpr); ok {
 		if v, ok := singleVar(we.W); ok {
@@ -340,17 +324,6 @@ func (c *checker) unused(e Expr) {
 		}
 	}
 	c.errorf(e.pos(), "unused value")
-}
-
-func isLiteralWord(w *Word) bool {
-	if len(w.Parts) != 1 {
-		return false
-	}
-	switch w.Parts[0].(type) {
-	case *StrAtom, *MLAtom, *ListAtom, *MapAtom, *NumAtom:
-		return true
-	}
-	return false
 }
 
 // value checks e where a value is required.
@@ -380,6 +353,10 @@ func (c *checker) needElse(e Expr) {
 			c.blockNeedElse(b.B)
 		}
 		c.blockNeedElse(e.Handler)
+	case *MatchExpr:
+		for _, arm := range e.Arms {
+			c.blockNeedElse(arm.Body)
+		}
 	case *BlockExpr:
 		c.blockNeedElse(e.B)
 	}
@@ -438,9 +415,15 @@ func (c *checker) checkExpr(e Expr) {
 			c.checkWord(w)
 		}
 		for _, r := range e.Redirs {
-			if r.Target != nil {
-				c.checkWord(r.Target)
+			if r.Target == nil {
+				continue
 			}
+			if g, ok := r.Target.Parts[0].(*GroupAtom); ok && r.Op == "<" && len(r.Target.Parts) == 1 {
+				if n, ok := noValue(g.X); ok { // bash's <(cmd)
+					c.errorf(g.X.pos(), "%s has no value; to pass its output as a file arg: (%s ... | as_file)", n, n)
+				}
+			}
+			c.checkWord(r.Target)
 		}
 	case *BinExpr:
 		c.checkExpr(e.L)
@@ -454,6 +437,20 @@ func (c *checker) checkExpr(e Expr) {
 	case *TryExpr:
 		c.checkExpr(e.Body)
 		c.checkBlock(e.Handler, false)
+	case *MatchExpr:
+		c.value(e.X)
+		for i, arm := range e.Arms {
+			for _, v := range patVars(arm.Pat) {
+				c.checkAtom(v)
+			}
+			if arm.Guard != nil {
+				c.checkExpr(arm.Guard)
+			}
+			c.checkBlock(arm.Body, false)
+			if i < len(e.Arms)-1 && arm.Guard == nil && irrefutable(arm.Pat) {
+				c.errorf(patPos(e.Arms[i+1].Pat), "unreachable arm: the arm before it matches everything")
+			}
+		}
 	case *BlockExpr:
 		c.checkBlock(e.B, false)
 	case *WordExpr:
@@ -477,6 +474,8 @@ func (c *checker) stageAfter(op string, st Expr) {
 	case op == "|>" && call.target == tExternal:
 		n := callName(call)
 		c.errorf(call.P, "%s reads stdin, not a value: print $x | %s", n, n)
+	case op == "|>" && b != nil && b.Name == "as_file": // values become bytes only through print
+		c.errorf(call.P, "as_file reads stdin, not a value: print $x | as_file")
 	case op == "|" && b != nil && b.Stdin:
 		call.stdin = true
 	case op == "|" && b != nil && b.Data:

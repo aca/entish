@@ -31,8 +31,10 @@ func init() {
 	add("each", 2, 2, biEach)
 	add("exit", 0, 1, biExit)
 	add("fail", 1, 1, biFail)
-	add("call", 1, 1, nil)  // rewritten to a $f call by the checker
-	add("eval", 1, -1, nil) // compiled when it runs, see evalFn
+	add("call", 1, 1, nil)   // rewritten to a $f call by the checker
+	add("eval", 1, -1, nil)  // compiled when it runs, see evalFn
+	add("source", 1, 1, nil) // expanded before checking, see expandSource
+	add("src", 1, 1, biSrc)
 	add("lines", 0, 1, splitter("lines", '\n'))
 	add("lines0", 0, 1, splitter("lines0", 0))
 	add("num", 1, 1, biNum)
@@ -45,19 +47,20 @@ func init() {
 	add("filter", 2, 2, biFilter)
 	add("to_json", 1, 1, biToJSON)
 	add("from_json", 0, 1, biFromJSON)
-	for _, n := range []string{"each", "map", "filter", "lines", "lines0", "len", "num", "str", "round", "keys", "assoc", "to_json", "from_json"} {
+	add("as_file", 0, 1, biAsFile)
+	for _, n := range []string{"each", "map", "filter", "lines", "lines0", "len", "num", "str", "round", "keys", "assoc", "to_json", "from_json", "src"} {
 		builtins[n].Data = true
 	}
-	for _, n := range []string{"lines", "lines0", "from_json"} {
+	for _, n := range []string{"lines", "lines0", "from_json", "as_file"} {
 		builtins[n].Stdin = true
 	}
-	for _, n := range []string{"lines", "lines0", "num", "str", "round", "keys", "assoc", "len", "map", "filter", "from_json"} {
+	for _, n := range []string{"lines", "lines0", "num", "str", "round", "keys", "assoc", "len", "map", "filter", "from_json", "as_file", "src"} {
 		builtins[n].Value = true
 	}
 	for _, n := range []string{"print", "to_json", "cd", "export", "abbr", "bind", "each"} {
 		builtins[n].Void = true
 	}
-	for _, n := range []string{"lines", "lines0", "map", "filter", "each"} {
+	for _, n := range []string{"lines", "lines0", "map", "filter", "each", "as_file"} {
 		builtins[n].Lazy = true
 	}
 }
@@ -136,6 +139,17 @@ func biFail(in *Interp, io ioCtx, args []Value) (Value, error) {
 		return nil, &Raise{Val: m}
 	}
 	return nil, errors.New(display(args[0]))
+}
+
+// biSrc returns the source of a fn or lambda, as written.
+func biSrc(in *Interp, io ioCtx, args []Value) (Value, error) {
+	switch f := args[0].(type) {
+	case *Closure:
+		return f.Src, nil
+	case *Builtin:
+		return nil, fmt.Errorf("src: %s is a builtin; it has no entish source", f.Name)
+	}
+	return nil, fmt.Errorf("src needs a fn, got a %s", typeName(args[0]))
 }
 
 func biNum(in *Interp, io ioCtx, args []Value) (Value, error) {
@@ -527,6 +541,57 @@ func biFromJSON(in *Interp, ioc ioCtx, args []Value) (Value, error) {
 		return nil, fmt.Errorf("from_json: %w", err)
 	}
 	return v, nil
+}
+
+// as_file copies stdin, byte for byte, to a new temp file and returns its
+// path, for commands that only take files: diff (sort a | as_file) b. It
+// takes no value: only print and to_json turn values into bytes. The file
+// is in $XDG_RUNTIME_DIR if set, mode 0600, and is removed when the input
+// ends.
+func biAsFile(in *Interp, ioc ioCtx, args []Value) (Value, error) {
+	src := ioc.in
+	var st *Stream
+	if len(args) > 0 {
+		var ok bool
+		if st, ok = args[0].(*Stream); !ok {
+			return nil, errors.New("as_file reads stdin, not a value: cmd | as_file")
+		}
+		src = st.r
+	}
+	dir := in.Getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = os.TempDir()
+	}
+	f, err := os.CreateTemp(dir, "entish-*")
+	if err != nil {
+		return nil, fmt.Errorf("as_file: %w", err)
+	}
+	in.tmpMu.Lock()
+	in.tmps = append(in.tmps, f.Name())
+	in.tmpMu.Unlock()
+	_, err = io.Copy(f, src)
+	if e := f.Close(); err == nil {
+		err = e
+	}
+	if err != nil {
+		return nil, fmt.Errorf("as_file: %w", err)
+	}
+	if st != nil {
+		st.r.Close()
+		if err := st.wait(); err != nil { // the producer failed
+			return nil, err
+		}
+	}
+	return f.Name(), nil
+}
+
+func (in *Interp) removeTmps() {
+	in.tmpMu.Lock()
+	defer in.tmpMu.Unlock()
+	for _, p := range in.tmps {
+		os.Remove(p)
+	}
+	in.tmps = nil
 }
 
 func readJSON(d *json.Decoder) (Value, error) {

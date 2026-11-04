@@ -24,7 +24,7 @@ func (s status) ok() bool { return s.code == 0 && s.sig == "" }
 
 func (in *Interp) raiseStatus(s status) error {
 	if s.sig != "" {
-		return &Raise{Val: errMap(s.pos, s.cmd, fmt.Sprintf("'%s' killed by %s", s.cmd, s.sig), nil, s.sig)}
+		return &Raise{Val: errMap(s.pos, s.cmd, fmt.Sprintf("'%s' killed by %s", s.cmd, s.sig), nil, s.sig), intr: s.sig == "SIGINT"}
 	}
 	code := s.code
 	return &Raise{Val: errMap(s.pos, s.cmd, fmt.Sprintf("'%s' failed (exit %d)", s.cmd, code), &code, "")}
@@ -96,7 +96,7 @@ func (in *Interp) stage(st Expr, env *Env, io ioCtx, carry Value, has, cond bool
 			return nil, err
 		case s.ok():
 			return nil, nil
-		case cond:
+		case cond && s.sig != "SIGINT":
 			return false, nil
 		}
 		return nil, in.raiseStatus(s)
@@ -189,6 +189,7 @@ func (in *Interp) callValue(f Value, args []Value, io ioCtx, cond bool, pos Pos)
 			rest := append([]Value(nil), args[len(f.Params):]...)
 			env = &Env{parent: env, name: f.Rest, val: &List{Items: rest}}
 		}
+		io.drop = nil // values a fn drops are its own business
 		return in.execBlock(f.Body, env, io, cond)
 	case *Builtin:
 		v, err := f.Fn(in, io, args)
@@ -215,6 +216,9 @@ func (in *Interp) compileEval(c *Call, env *Env, io ioCtx) (Value, error) {
 		return nil, raisef(c.P, "eval needs a str, got a "+typeName(vals[0]))
 	}
 	prog, err := parse(src, "<eval>")
+	if err == nil {
+		err = in.expandSource(prog, nil)
+	}
 	if err == nil {
 		err = check(prog, in.topFns, nil, false)
 	}
@@ -292,10 +296,17 @@ func (in *Interp) bytePipeline(stages []Expr, env *Env, io ioCtx, carry Value, h
 		if sts[i].ok() || i < n-1 && sts[i].sig == "SIGPIPE" {
 			continue
 		}
-		if cond {
+		if cond && sts[i].sig != "SIGINT" {
 			return false, nil
 		}
 		return nil, in.raiseStatus(sts[i])
+	}
+	if io.drop != nil {
+		for _, v := range vals[:n-1] { // only their output went on
+			if v != nil {
+				io.drop(v)
+			}
+		}
 	}
 	return vals[n-1], nil
 }
@@ -322,12 +333,27 @@ func (in *Interp) pipeStage(st Expr, env *Env, sio ioCtx, carry Value, has, last
 func (in *Interp) runExternal(c *Call, env *Env, io ioCtx) (status, error) {
 	// Resolve the command before evaluating args, so a missing command fails
 	// before $( ) args run.
-	path, err := in.lookPath(c.Name)
+	name := c.Name
+	if c.HeadVar != nil {
+		v, err := in.lookupVar(c.HeadVar, env, io)
+		if err != nil {
+			return status{}, err
+		}
+		s, ok := v.(string)
+		switch {
+		case !ok:
+			return status{}, raisef(c.P, "$"+c.HeadVar.Name+" is a "+typeName(v)+", not a command name")
+		case s == "":
+			return status{}, raisef(c.P, "$"+c.HeadVar.Name+" is an empty command name")
+		}
+		name = s
+	}
+	path, err := in.lookPath(name)
 	if err != nil {
 		code := 127
-		return status{}, &Raise{Val: errMap(c.P, c.Name, err.Error(), &code, "")}
+		return status{}, &Raise{Val: errMap(c.P, name, err.Error(), &code, "")}
 	}
-	argv := []string{c.Name}
+	argv := []string{name}
 	for _, w := range c.Args {
 		vals, err := in.wordValues(w, env, io)
 		if err != nil {

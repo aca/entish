@@ -47,7 +47,7 @@ func (in *Interp) execStmt(st Stmt, env, act *Env, io ioCtx, cond bool) (Value, 
 		// The fn is also the value $name from here on, like a let; its own
 		// body sees it too, so $name recurses.
 		d := st.Def
-		c := &Closure{Name: d.Name, Params: d.Params, Rest: d.Rest, Body: d.Body}
+		c := &Closure{Name: d.Name, Params: d.Params, Rest: d.Rest, Body: d.Body, Src: d.Src}
 		node := &Env{parent: env, name: d.Name, val: c}
 		c.Env = node
 		act.fns[d.Name] = c
@@ -100,10 +100,12 @@ func (in *Interp) eval(e Expr, env *Env, io ioCtx, cond bool) (Value, error) {
 			}
 		}
 		var r *Raise
-		if errors.As(err, &r) {
+		if errors.As(err, &r) && !r.intr {
 			return in.execBlock(e.Handler, &Env{parent: env, name: e.Name, val: r.Val}, io, cond)
 		}
 		return v, err
+	case *MatchExpr:
+		return in.match(e, env, io, cond)
 	case *OrExpr:
 		l, err := in.eval(e.L, env, io, true)
 		if err != nil {
@@ -152,6 +154,100 @@ func (in *Interp) eval(e Expr, env *Env, io ioCtx, cond bool) (Value, error) {
 		return in.pipeline([]Expr{e}, nil, env, io, cond)
 	}
 	panic(fmt.Sprintf("unknown expression %T", e))
+}
+
+// match runs the first arm whose pattern matches and whose guard holds.
+func (in *Interp) match(e *MatchExpr, env *Env, io ioCtx, cond bool) (Value, error) {
+	v, err := in.eval(e.X, env, io, false)
+	if err != nil {
+		return nil, err
+	}
+	for _, arm := range e.Arms {
+		aenv, ok, err := in.matchPat(arm.Pat, v, env, env, io)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		if arm.Guard != nil {
+			g, err := in.eval(arm.Guard, aenv, io, true)
+			if err != nil {
+				return nil, err
+			}
+			if ok, err = truth(arm.Guard, g, "a match guard"); err != nil {
+				return nil, err
+			}
+			if !ok {
+				continue
+			}
+		}
+		return in.execBlock(arm.Body, aenv, io, cond)
+	}
+	s := literal(v)
+	if r := []rune(s); len(r) > 200 {
+		s = string(r[:200]) + "..."
+	}
+	return nil, raisef(e.P, "match: no arm matches "+s)
+}
+
+// matchPat matches v against p. Bindings are added to benv; a $v pattern
+// is looked up in env, outside the pattern.
+func (in *Interp) matchPat(p Pattern, v Value, env, benv *Env, io ioCtx) (*Env, bool, error) {
+	switch p := p.(type) {
+	case *AnyPat:
+		return benv, true, nil
+	case *BindPat:
+		return &Env{parent: benv, name: p.Name, val: v}, true, nil
+	case *LitPat:
+		return benv, sameValue(p.Val, v), nil
+	case *VarPat:
+		want, err := in.lookupVar(p.V, env, io)
+		if err != nil {
+			return nil, false, err
+		}
+		return benv, sameValue(want, v), nil
+	case *ListPat:
+		l, ok := v.(*List)
+		if !ok || len(l.Items) < len(p.Items) || p.Rest == "" && len(l.Items) != len(p.Items) {
+			return benv, false, nil
+		}
+		for i, x := range p.Items {
+			var err error
+			if benv, ok, err = in.matchPat(x, l.Items[i], env, benv, io); err != nil || !ok {
+				return benv, ok, err
+			}
+		}
+		if p.Rest != "" && p.Rest != "_" {
+			rest := &List{Items: append([]Value(nil), l.Items[len(p.Items):]...)}
+			benv = &Env{parent: benv, name: p.Rest, val: rest}
+		}
+		return benv, true, nil
+	case *MapPat:
+		m, ok := v.(*Map)
+		if !ok {
+			return benv, false, nil
+		}
+		for i, k := range p.Keys {
+			mv, ok := m.M[k]
+			if !ok {
+				return benv, false, nil
+			}
+			var err error
+			if benv, ok, err = in.matchPat(p.Vals[i], mv, env, benv, io); err != nil || !ok {
+				return benv, ok, err
+			}
+		}
+		return benv, true, nil
+	}
+	panic(fmt.Sprintf("unknown pattern %T", p))
+}
+
+// sameValue is == for patterns: values of different types differ instead
+// of raising.
+func sameValue(a, b Value) bool {
+	eq, err := equal(a, b)
+	return err == nil && eq
 }
 
 // isCall: e may give the $nil of a command that succeeded.
@@ -399,7 +495,7 @@ func (in *Interp) atomValue(a Atom, env *Env, io ioCtx) (Value, error) {
 		}
 		return m, nil
 	case *LambdaAtom:
-		return &Closure{Params: a.Params, Rest: a.Rest, Body: a.Body, Env: env}, nil
+		return &Closure{Params: a.Params, Rest: a.Rest, Body: a.Body, Src: a.Src, Env: env}, nil
 	}
 	panic(fmt.Sprintf("unknown atom %T", a))
 }

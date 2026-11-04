@@ -54,10 +54,10 @@ env GOOS=linux go build ./...                 # env for one command: the externa
 
 ### Rules
 
-**Keywords (6):** `let fn if else try catch`. There are no loops; use `each`, `map`, `filter`, or recursion.
+**Keywords (7):** `let fn if else try catch match`. There are no loops; use `each`, `map`, `filter`, or recursion.
 
 **Calls**
-- `name args...` calls the fn `name` if one is defined, else the external `name` from PATH. `^name` is always the external; a word with `/` is a path.
+- `name args...` calls the fn `name` if one is defined, else the external `name` from PATH. `^name` is always the external; a word with `/` is a path. `^$cmd args...` runs the external named by the str `$cmd`.
 - Resolution is static. Calling a fn or builtin with the wrong number of args is a compile error, on every branch.
 
 **Output and values**
@@ -76,6 +76,7 @@ env GOOS=linux go build ./...                 # env for one command: the externa
   - `'text' | cat`, `len $x | cat` → a value cannot be piped; `print` it.
   - `$xs |> jq .` → `jq reads stdin, not a value: print $x | jq`.
   - `ls | len` → `len takes a value, not stdin: ls | lines |> len`.
+- At the REPL, the values of what you typed are shown after the command, marked `▶`: each statement's, and each `|` stage's that `|>` did not take (`f | cat` shows f's value). They go only to the screen, never into a pipe or file. Values dropped inside fns are not shown. A script shows nothing.
 
 **Pipes**
 - `|` carries bytes from the output of one stage to the stdin of the next.
@@ -124,12 +125,13 @@ print $conf > nginx.conf
 **Conditions and failure**
 - A failing command raises.
 - In a condition, failure is `false` instead: the condition of `if`, the left side of `||`, and the operand of `!`.
+- Ctrl+C is never handled: a command killed by SIGINT raises even in a condition, and `try` does not catch it.
 - A call in a condition is true when it succeeds and returns `$nil` (a command) or `$true`, false when it fails or returns `$false`. Any other operand must be a `bool`: `if test -f x`, `if has $k $m`, `if $n > 0`.
 - `a && b` raises if `a` fails. `a || b` runs `b` if `a` fails.
 - Pipefail is on; a stage killed by SIGPIPE (`yes | head`) is not a failure.
 - An `if` whose value is used must have an `else` if its then-branch ends in an expression: `fn sign x { if $x < 0 { 'neg' } }` is an error; a branch ending in a call (`print`, `fail`, a fn) needs none.
 
-**Builtins:** `print cd export exit fail call eval abbr bind num str round lines lines0 from_json to_json len map filter each keys assoc`. Collection fns take their data last, so they compose with `|>`.
+**Builtins:** `print cd export exit fail call eval source src abbr bind num str round lines lines0 from_json to_json as_file len map filter each keys assoc`. Collection fns take their data last, so they compose with `|>`.
 
 ## Interactive editor
 
@@ -215,5 +217,5 @@ The editor and the language are behind small interfaces, so either can be replac
 
 ## Not implemented yet
 
-- Language: `in_dir`, `command $name`, slices `$xs[1:3]`, `explain`, builtins `split_by join_with reduce chunk sort_by count_by get ends_with`, unsetting env vars, regex, modules, floats, `**`, `~`, tail calls.
+- Language: `in_dir`, slices `$xs[1:3]`, `explain`, builtins `split_by join_with reduce chunk sort_by count_by get ends_with`, unsetting env vars, regex, modules, floats, `**`, `~`, tail calls.
 - Shell: job control (Ctrl-Z leaves the shell waiting); completion beyond names and files.

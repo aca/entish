@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -46,6 +47,7 @@ func TestEvalPrints(t *testing.T) {
 		{"[1 2] |> map { |x| $x + 1 }", "[2 3]"},
 		{"if 1 < 2 { 'yes' } else { 'no' }", "yes"},
 		{"try { false } catch e { $e[code] }", "1"},
+		{"try { sh -c 'kill -TERM $$' } catch e { $e[signal] }", "SIGTERM"},
 		{"let x = 1", ""},
 		{"1 / 3 |> round 4", "0.3333"},
 		{"-5 / 2 |> round 0", "-3"},
@@ -61,6 +63,10 @@ func TestEvalPrints(t *testing.T) {
 		{"'x' |> eval '$args'", "['x']"},
 		{"fn sq x { $x * $x }\neval 'sq 7'", "49"},
 		{"let src = 'echo hi'; eval $src | lines", "['hi']"},
+		{"let n = 2; eval \"$n + 1\"", "3"},
+		{"eval $(echo 1)", "1"},
+		{"let c = 'echo'; ^$c hi | lines", "['hi']"},
+		{"let cs = ['echo']; ^$cs[0] hi | lines", "['hi']"},
 		{"let d = eval '{ |x| $x * 2 }'; $d 21", "42"},
 		{"if eval 'false' { 1 } else { 2 }", "2"},
 		{"let xs = [10 20 30 40]; $xs[1:3]", "[20 30]"},
@@ -86,6 +92,72 @@ func TestEvalPrints(t *testing.T) {
 		{"let g = { 41 + 1 }; call $g", "42"},
 		{"let f = { false }; if call $f { 'y' } else { 'n' }", "n"},
 		{"echo hi", ""}, // commands print themselves; nothing extra
+		{"match 1 { 1 => 'one'; _ => 'other' }", "one"},
+		{"match 'x' { 'y' => 1; s => $s }", "x"},
+		{"match [1 2 3] { [a ...rest] => [$a $rest] }", "[1 [2 3]]"},
+		{"match [1 2 3] { [a b] => 1; [a ..._] => $a }", "1"},
+		{"match [] { [x ..._] => 1; [] => 'empty' }", "empty"},
+		{"match [a: 1 b: 2] { [b: x] => $x }", "2"},
+		{"match [a: 1] { [b: x] => 1; [:] => 'map' }", "map"},
+		{"match [a: [1 'q']] { [a: [1 s]] => $s }", "q"},
+		{"match 5 { n if $n > 9 => 'big'; n if $n > 3 => 'mid'; _ => 'small' }", "mid"},
+		{"let want = 'b'; match 'b' { $want => 'same'; _ => 'diff' }", "same"},
+		{"match $nil { $nil => 'nil' }", "nil"},
+		{"match '1' { 1 => 'num'; _ => 'str' }", "str"}, // no conversion, and no raise
+		{"match [1] { ['1'] => 'str'; [1] => 'num' }", "num"},
+		{"let x = 1; match 2 { x => $x }", "2"},
+		{"match 1 { _ => { let y = 2; $y * 3 } }", "6"},
+		{"match 1 {\n  1 => print one\n  _ => print other\n}", ""},
+		{"match 1 {\n  1 => {\n    'next line'\n  }\n  _ => 'other'\n}", "next line"},
+		{"[1 2] |> map { match $it { 1 => 'a'; _ => 'b' } }", "['a' 'b']"},
+		{"if match 1 { 1 => $true; _ => $false } { 'y' } else { 'n' }", "y"},
+		{"src { $it + 1 }", "{ $it + 1 }"},
+		{"fn add a b { $a + $b }; src $add", "fn add a b { $a + $b }"},
+		{"fn add a b { $a + $b }; $add |> src", "fn add a b { $a + $b }"},
+		{"let s = src {|x| $x * 2 }; let f = eval $s; $f 21", "42"},
+	}
+	for _, c := range cases {
+		in, _ := newTest(t)
+		got, err := evalLast(in, c.src)
+		if err != nil {
+			t.Errorf("%q: %v", c.src, err)
+			continue
+		}
+		if got != c.want {
+			t.Errorf("%q = %q, want %q", c.src, got, c.want)
+		}
+	}
+}
+
+// evalLast runs a REPL input and returns the last value it shows.
+func evalLast(in *Interp, src string) (string, error) {
+	vals, err := in.Eval(src)
+	if len(vals) == 0 {
+		return "", err
+	}
+	return vals[len(vals)-1], err
+}
+
+// TestReplShows checks which values the REPL shows: those of statements
+// and of stages whose value is not passed on with |>, but none from inside
+// fns.
+func TestReplShows(t *testing.T) {
+	cases := []struct {
+		src  string
+		want []string
+	}{
+		{"[1 2] |> len", []string{"2"}},
+		{"let x = 1", nil},
+		{"print hi", nil},
+		{"fn f { 1 }; f | cat", []string{"1"}},
+		{"fn f { 1 }; f; f", []string{"1", "1"}},
+		{"fn f { 1 }; f | cat | lines", []string{"1", "[]"}},
+		{"fn f x { $x }; [2] |> f | cat", []string{"[2]"}},
+		{"fn f { 1 }; fn g { f | cat; f; 2 }; g", []string{"2"}},
+		{"fn f { 1 }; [1] |> map {|x| f | cat; $x }", []string{"[1]"}},
+		{"fn f { 1 }; if $true { f | cat }", []string{"1"}},
+		{"fn f { 1 }; match 1 { 1 => { f | cat }; _ => print }", []string{"1"}},
+		{"fn f { 1 }; let s = $(f | cat)", []string{"1"}},
 	}
 	for _, c := range cases {
 		in, _ := newTest(t)
@@ -94,8 +166,8 @@ func TestEvalPrints(t *testing.T) {
 			t.Errorf("%q: %v", c.src, err)
 			continue
 		}
-		if got != c.want {
-			t.Errorf("%q = %q, want %q", c.src, got, c.want)
+		if !slices.Equal(got, c.want) {
+			t.Errorf("%q shows %q, want %q", c.src, got, c.want)
 		}
 	}
 }
@@ -107,18 +179,18 @@ func TestReplPersists(t *testing.T) {
 			t.Fatalf("%q: %v", src, err)
 		}
 	}
-	if got, _ := in.Eval("$y"); got != "21" {
+	if got, _ := evalLast(in, "$y"); got != "21" {
 		t.Errorf("$y = %q", got)
 	}
-	if got, err := in.Eval("[1] |> map {|v| $add $v 1 }"); got != "[2]" {
+	if got, err := evalLast(in, "[1] |> map {|v| $add $v 1 }"); got != "[2]" {
 		t.Errorf("$add from an earlier input = %q, %v", got, err)
 	}
 }
 
 func TestNeedsMore(t *testing.T) {
 	in, _ := newTest(t)
-	more := []string{"if $true {", "let x =", "ls |", "[1 2", "print (1 +", `\\a`, "fn f {"}
-	done := []string{"print hi", "if $true { 1 }", "\\\\a\n", "'unterminated"}
+	more := []string{"if $true {", "let x =", "ls |", "[1 2", "print (1 +", `\\a`, "fn f {", "match $x {", "match 1 { 1 => {", "match 1 { [1"}
+	done := []string{"print hi", "if $true { 1 }", "\\\\a\n", "'unterminated", "match 1 { 1 =>"}
 	for _, s := range more {
 		if !in.NeedsMore(s) {
 			t.Errorf("NeedsMore(%q) = false", s)
@@ -157,29 +229,62 @@ func TestCompileErrors(t *testing.T) {
 		"if $true { let x = 1 }\nprint $x":       "undefined variable $x",
 		"fn f { $y }\nlet y = 1":                 "undefined variable $y",
 		"fn show { print $v }\nfn run { let v = 1; show }": "undefined variable $v",
-		"print $it":                                      "$it is only defined",
-		"try { false } catch e { 1 }\nprint $e":          "undefined variable $e",
-		"fn f x { if $x { 'pos' } }":                     "needs an else",
-		"let x = if $true { 1 } else if $false { 2 }":    "needs an else",
-		"[1] |> map { if $it > 0 { $it } }":              "needs an else",
-		"[1] |> map { $it } | cat":                       "cannot be piped",
-		"let m = [a: 1 a: 2]":                            "duplicate key a",
-		"let xs = [1]; $xs[]":                            "empty index",
-		"let f = 'x'; eval \"print $f\"":                 "eval takes its source first, as a 'literal' or a $var",
-		"eval $(echo 1)":                                 "eval takes its source first",
-		"'print 1' |> eval":                              "eval takes its source first",
-		"print $eval":                                    "undefined variable $eval",
-		"let xs = [1]; $xs[len $xs]":                     "a call in an index needs parens: $xs[(len ...)]",
-		"let xs = [1]; $xs[(ls)]":                        "ls has no value",
-		"let xs = [1]; $xs[($i)]":                        "undefined variable $i",
-		"let xs = [1]; print \"$xs[(len $xs) - 1]\"":     "a string interpolates variables, never code",
+		"print $it":                                   "$it is only defined",
+		"try { false } catch e { 1 }\nprint $e":       "undefined variable $e",
+		"fn f x { if $x { 'pos' } }":                  "needs an else",
+		"let x = if $true { 1 } else if $false { 2 }": "needs an else",
+		"[1] |> map { if $it > 0 { $it } }":           "needs an else",
+		"[1] |> map { $it } | cat":                    "cannot be piped",
+		"let m = [a: 1 a: 2]":                         "duplicate key a",
+		"let xs = [1]; $xs[]":                         "empty index",
+		"'print 1' |> eval":                           "eval takes its source as its first arg",
+		"$(pwd)":                                      "unused value",
+		"1 + 1":                                       "unused value",
+		"^'ls'":                                       "expected a command name",
+		"'x' |> as_file":                              "as_file reads stdin, not a value: print $x | as_file",
+		"as_file x":                                   "as_file reads stdin, not a value",
+		"cat <(ls)":                                   "ls has no value; to pass its output as a file arg: (ls ... | as_file)",
+		"print $eval":                                 "undefined variable $eval",
+		"let xs = [1]; $xs[len $xs]":                  "a call in an index needs parens: $xs[(len ...)]",
+		"let xs = [1]; $xs[(ls)]":                     "ls has no value",
+		"let xs = [1]; $xs[($i)]":                     "undefined variable $i",
+		"let xs = [1]; print \"$xs[(len $xs) - 1]\"":  "a string interpolates variables, never code",
 		"let xs = [1]; let i = 0; print \"$xs[$i + 1]\"": "a string interpolates variables, never code",
-		"print $call":                                    "undefined variable $call",
-		"fn a { $b }\nfn b { 1 }":                        "undefined variable $b",
-		"[1] |> map {|x| $it }":                          "use them instead of $it",
-		"let f = { 1 }\nlet r = { $f; print x }":         "to call a fn value: call $f",
-		"let r = { 1 + 2; print x }":                     "unused value",
-		"call { print x }":                               "call takes one fn variable",
+		"print $call":                             "undefined variable $call",
+		"fn a { $b }\nfn b { 1 }":                 "undefined variable $b",
+		"[1] |> map {|x| $it }":                   "use them instead of $it",
+		"let f = { 1 }\nlet r = { $f; print x }":  "to call a fn value: call $f",
+		"let r = { 1 + 2; print x }":              "unused value",
+		"call { print x }":                        "call takes one fn variable",
+		"match 1 { _ => 1; 1 => 2 }":              "unreachable arm",
+		"match 1 { x => 1; _ => 2 }":              "unreachable arm",
+		"match [1 1] { [x x] => 1 }":              "$x is bound twice",
+		"match 1 { foo.txt => 1 }":                "bare word foo.txt in a pattern",
+		"match 1 { true => 1 }":                   "to match the value write $true",
+		"match 1 { }":                             "match needs at least one arm",
+		"match 1 { 1 2 }":                         "expected => after the pattern",
+		"let v = 1; match 1 { \"$v\" => 1 }":      "a pattern string cannot interpolate",
+		"match 1 { $(echo 1) => 1 }":              "a pattern cannot run code",
+		"match 1 { 1 => {|x| $x } }":              "the { } after => is a block",
+		"match 1 { [a ...r b] => 1 }":             "...rest must be the last item",
+		"match 1 { [a: 1 b] => 1 }":               "mixed list items and map entries",
+		"match 1 { $nope => 1 }":                  "undefined variable $nope",
+		"match 1 { x => 1 }\nprint $x":            "undefined variable $x",
+		"match 1 { x if $y => 1 }":                "undefined variable $y",
+		"match ls { _ => 1 }":                     "ls has no value",
+		"let r = match 1 { _ => if $true { 1 } }": "needs an else",
+		"match 1 { _ => 1 }\nprint x":             "unused value",
+		"1 |> match { _ => 1 }":                   "match takes its value first",
+		"let match = 1":                           "match is reserved",
+		"fn f { source x.ent }":                   "source must be a statement at the top level",
+		"source $HOME/x.ent":                      "source takes one literal path",
+		"source a.ent b.ent":                      "source takes one literal path",
+		"source nope.ent":                         "source: open",
+		"src":                                     "src takes 1 args, got 0",
+		"match 1 { 1 => }":                        "expected a body on the same line after =>",
+		"match 1 {\n  1 =>\n  _ => print b\n}":    "expected a body on the same line after =>",
+		"match 1 { 1 => ; _ => 2 }":               "expected a body on the same line after =>",
+		"src { 1 } | cat":                         "cannot be piped",
 	}
 	for src, want := range cases {
 		in, _ := newTest(t)
@@ -218,6 +323,38 @@ print $t
 	}
 }
 
+func TestAsFile(t *testing.T) {
+	in, out := newTest(t)
+	dir := t.TempDir()
+	in.env["XDG_RUNTIME_DIR"] = dir
+	src := `
+let p = (printf 'x\n\n' | as_file)
+cat $p
+comm -12 (printf 'a\nb\n' | as_file) (printf 'b\nc\n' | as_file)
+fn gen { print g }
+cat (gen | as_file)
+`
+	if err := in.RunScript(src, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := out(), "x\n\nb\ng\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+	if left, _ := os.ReadDir(dir); len(left) != 0 {
+		t.Errorf("temp files left after the script: %v", left)
+	}
+	vals, err := in.Eval("printf a | as_file")
+	if err != nil || len(vals) != 1 || filepath.Dir(vals[0]) != dir {
+		t.Fatalf("as_file at the REPL = %q, %v", vals, err)
+	}
+	if _, err := os.Stat(vals[0]); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("%s still exists after the input: %v", vals[0], err)
+	}
+	if err := in.RunScript("let p = (false | as_file)", "t"); err == nil || !strings.Contains(err.Error(), "'false' failed") {
+		t.Errorf("failing producer: %v", err)
+	}
+}
+
 func TestRuntimeErrors(t *testing.T) {
 	cases := map[string]string{
 		"false":                                "'false' failed (exit 1)",
@@ -229,22 +366,32 @@ func TestRuntimeErrors(t *testing.T) {
 		"!true":                                "the command succeeded",
 		"let xs = [1]; echo $xs":               "list passed to an external",
 		"sleep (1 / 3)":                        "no exact decimal",
-		"if 'x' { 1 }":                         "if needs a bool",
+		"if 'x' { print 1 }":                   "if needs a bool",
+		"let c = 1; ^$c":                       "$c is a num, not a command name",
+		"let c = ''; ^$c":                      "$c is an empty command name",
 		"let xs = [1 2]; print (str $xs[1:3])": "slice [1:3] out of range",
-		"let m = [1: 'x']; let n = 1; print $m[$n]": "a map key must be a str",
-		"let m = [a: 1]; print (str $m[0:1])":       "cannot slice a map",
-		"[1] |> keys":                               "keys needs a map",
-		"1 / 3 |> to_json":                          "to_json: 1/3 has no exact decimal",
-		"[{ $it }] |> to_json":                      "to_json: cannot encode a fn",
-		`'{"a":1,"a":2}' |> from_json`:              "from_json: duplicate key 'a'",
-		`'[1] x' |> from_json`:                      "unexpected data after the value",
-		`'' |> from_json`:                           "from_json: no JSON value",
-		"1 |> from_json":                            "from_json needs a str",
-		"eval 'print (1 +'":                         "eval: <eval>:1:",
-		"let local = 1; eval '$local'":              "eval: <eval>:1:1: undefined variable $local",
-		"eval 'if $true { 1 }'":                     "needs an else",
-		"let n = 1; eval $n":                        "eval needs a str, got a num",
-		"eval 'fn inner { 5 }'; inner":              "inner: command not found",
+		"let m = [1: 'x']; let n = 1; print $m[$n]":                     "a map key must be a str",
+		"let m = [a: 1]; print (str $m[0:1])":                           "cannot slice a map",
+		"[1] |> keys":                                                   "keys needs a map",
+		"1 / 3 |> to_json":                                              "to_json: 1/3 has no exact decimal",
+		"[{ $it }] |> to_json":                                          "to_json: cannot encode a fn",
+		`'{"a":1,"a":2}' |> from_json`:                                  "from_json: duplicate key 'a'",
+		`'[1] x' |> from_json`:                                          "unexpected data after the value",
+		`'' |> from_json`:                                               "from_json: no JSON value",
+		"1 |> from_json":                                                "from_json needs a str",
+		"eval 'print (1 +'":                                             "eval: <eval>:1:",
+		"let local = 1; eval '$local'":                                  "eval: <eval>:1:1: undefined variable $local",
+		"eval 'if $true { 1 }'":                                         "needs an else",
+		"let n = 1; eval $n":                                            "eval needs a str, got a num",
+		"eval 'fn inner { 5 }'; inner":                                  "inner: command not found",
+		"print (match 3 { 1 => 'a'; 2 => 'b' })":                        "match: no arm matches 3",
+		"print (match 3 { n if 'x' => 1 })":                             "a match guard needs a bool",
+		"print (src $map)":                                              "src: map is a builtin",
+		"print (src 1)":                                                 "src needs a fn, got a num",
+		"let r = try { sh -c 'kill -INT $$' } catch e { 1 }":            "killed by SIGINT",
+		"sh -c 'kill -INT $$' || print no":                              "killed by SIGINT",
+		"let r = if sh -c 'kill -INT $$' { 1 } else { 2 }":              "killed by SIGINT",
+		"print (match '" + strings.Repeat("é", 300) + "' { 'a' => 1 })": strings.Repeat("é", 199) + "...",
 	}
 	for src, want := range cases {
 		in, _ := newTest(t)
@@ -474,6 +621,7 @@ func TestHighlight(t *testing.T) {
 		{"if test -f x { top } else { print 'no' }", "kw:if ext:test fn:top kw:else fn:print"},
 		{"let r = try { ./build } catch e { 1 }", "kw:let kw:try ext:./build kw:catch"},
 		{"print $(git log | wc -l)", "fn:print ext:git pipe:| ext:wc"},
+		{"match $args { [x] if test -f $x => cat $x; _ => print no }", "kw:match kw:if ext:test kw:=> ext:cat kw:=> fn:print"},
 		// unfinished: resolved by name
 		{"fn g { 1 }; ls | each {\n  g", "kw:fn fn:g ext:ls pipe:| fn:each fn:g"},
 		{"top | ", "fn:top pipe:|"},
@@ -488,5 +636,63 @@ func TestHighlight(t *testing.T) {
 		if g := strings.Join(got, " "); g != c.want {
 			t.Errorf("%q:\n got  %s\n want %s", c.src, g, c.want)
 		}
+	}
+}
+
+func TestSource(t *testing.T) {
+	in, out := newTest(t)
+	write := func(name, src string) {
+		t.Helper()
+		p := filepath.Join(in.cwd, name)
+		os.MkdirAll(filepath.Dir(p), 0o755)
+		if err := os.WriteFile(p, []byte(src), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("lib/a.ent", "source b.ent\nfn greet n { print \"hi $n\" }\nlet version = 1")
+	write("lib/b.ent", "fn twice x { $x * 2 }")
+	write("main.ent", "source lib/a.ent\ngreet (twice $version)")
+	if err := in.RunScript("source main.ent", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if got := out(); got != "hi 2\n" {
+		t.Errorf("sourced output = %q", got)
+	}
+
+	// At the REPL, sourcing again re-reads the file: fns defined earlier
+	// that call a sourced fn see the new definition.
+	in, out = newTest(t)
+	write("lib.ent", "fn f { 1 }")
+	for _, src := range []string{"source lib.ent", "fn g { f }"} {
+		if _, err := in.Eval(src); err != nil {
+			t.Fatalf("%q: %v", src, err)
+		}
+	}
+	write("lib.ent", "fn f { 2 }\n'not printed'")
+	if got, err := in.Eval("source lib.ent"); len(got) != 0 || err != nil {
+		t.Errorf("source at the REPL = %q, %v; want no value", got, err)
+	}
+	if got, _ := evalLast(in, "g"); got != "2" {
+		t.Errorf("g after reload = %q, want 2", got)
+	}
+
+	write("c1.ent", "source c2.ent")
+	write("c2.ent", "source c1.ent")
+	err := in.RunScript("source c1.ent", filepath.Join(in.cwd, "top.ent"))
+	if err == nil || !strings.Contains(err.Error(), "source cycle") {
+		t.Errorf("cycle: got %v", err)
+	}
+	write("bad.ent", "let x = ")
+	err = in.RunScript("source bad.ent", "t")
+	if err == nil || !strings.Contains(err.Error(), "bad.ent:1:") {
+		t.Errorf("an error in a sourced file should point into it, got %v", err)
+	}
+	write("shadow.ent", "fn source p { print $p }")
+	err = in.RunScript("source shadow.ent", "t")
+	if err == nil || !strings.Contains(err.Error(), "cannot define fn source") {
+		t.Errorf("fn source in a sourced file: got %v", err)
+	}
+	if err := in.RunScript("fn source p { print $p }\nsource x", "t"); err != nil || out() != "x\n" {
+		t.Errorf("a fn named source should shadow the builtin: %v", err)
 	}
 }

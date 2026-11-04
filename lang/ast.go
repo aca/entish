@@ -42,6 +42,7 @@ type FnDef struct {
 	Params []string
 	Rest   string
 	Body   *Block
+	Src    string // the definition as written, for src
 }
 
 type Expr interface{ pos() Pos }
@@ -75,7 +76,8 @@ const (
 	tVar
 )
 
-// Call is `name args...`, `^name args...`, `./path args...` or `$f args...`.
+// Call is `name args...`, `^name args...`, `^$name args...` (the name is a
+// str), `./path args...` or `$f args...`.
 type Call struct {
 	P       Pos
 	Name    string
@@ -116,6 +118,19 @@ type TryExpr struct {
 	Handler *Block
 }
 
+// MatchExpr runs the first arm whose pattern matches X; none raises.
+type MatchExpr struct {
+	P    Pos
+	X    Expr
+	Arms []*MatchArm
+}
+
+type MatchArm struct {
+	Pat   Pattern
+	Guard Expr // nil if none
+	Body  *Block
+}
+
 type BlockExpr struct{ B *Block }
 
 // WordExpr is a single word used as a value.
@@ -129,6 +144,7 @@ func (e *Call) pos() Pos      { return e.P }
 func (e *BinExpr) pos() Pos   { return e.P }
 func (e *IfExpr) pos() Pos    { return e.P }
 func (e *TryExpr) pos() Pos   { return e.P }
+func (e *MatchExpr) pos() Pos { return e.P }
 func (e *BlockExpr) pos() Pos { return e.B.Pos }
 func (e *WordExpr) pos() Pos  { return e.W.Pos }
 
@@ -169,9 +185,9 @@ type Index struct {
 }
 
 type IndexArg struct {
-	Lit   Value // string or *Num
-	Var   *VarRef
-	X     Expr // $xs[(len $xs) - 1]; never inside a string
+	Lit Value // string or *Num
+	Var *VarRef
+	X   Expr // $xs[(len $xs) - 1]; never inside a string
 }
 
 // indexExprs is every expression in v's indexes, including those of
@@ -204,6 +220,7 @@ type LambdaAtom struct {
 	Params []string
 	Rest   string
 	Body   *Block
+	Src    string // the lambda as written, for src
 	usesIt bool
 }
 type SpreadAtom struct{ X Atom } // ...$x or ...( )
@@ -221,3 +238,34 @@ func (*MapAtom) atom()    {}
 func (*LambdaAtom) atom() {}
 func (*SpreadAtom) atom() {}
 func (*HomeAtom) atom()   {}
+
+// Pattern is a match pattern.
+type Pattern interface{ pattern() }
+
+type AnyPat struct{ Pos Pos } // _
+type BindPat struct {         // name: anything, bound to $name
+	Pos  Pos
+	Name string
+}
+type LitPat struct { // 'lit', 42: an equal value
+	Pos Pos
+	Val Value
+}
+type VarPat struct{ V *VarRef } // $v: equal to the variable's value
+type ListPat struct {           // [a b ...rest]
+	Pos   Pos
+	Items []Pattern
+	Rest  string // ...rest: "" for none, "_" to ignore the rest
+}
+type MapPat struct { // [k: pat]: has key k whose value matches; extra keys ok
+	Pos  Pos
+	Keys []string
+	Vals []Pattern
+}
+
+func (*AnyPat) pattern()  {}
+func (*BindPat) pattern() {}
+func (*LitPat) pattern()  {}
+func (*VarPat) pattern()  {}
+func (*ListPat) pattern() {}
+func (*MapPat) pattern()  {}
