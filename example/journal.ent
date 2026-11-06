@@ -1,0 +1,19 @@
+#!/usr/bin/env entish
+# The systemd journal as data: one JSON object per line, streamed into
+# records, matched by shape, then back to bytes for sort and uniq.
+
+fn unit e {
+    match $e {
+        [_SYSTEMD_UNIT: u]     => $u
+        [SYSLOG_IDENTIFIER: s] => $s
+        _                      => '?'
+    }
+}
+
+# warnings and errors per unit in the last 5000 entries
+journalctl -o json -n 5000 --no-pager | lines |> map { from_json $it } |>
+    filter { (num $it[PRIORITY]) <= 4 } |>
+    each { print (unit $it) } | sort | uniq -c | sort -rn | head
+
+# live: the same pipeline on journalctl -f handles each entry as it arrives
+# journalctl -o json -f | lines |> map { from_json $it } |> filter {..} |> each {..}

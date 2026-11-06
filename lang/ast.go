@@ -77,14 +77,15 @@ const (
 )
 
 // Call is `name args...`, `^name args...`, `^$name args...` (the name is a
-// str), `./path args...` or `$f args...`.
+// str), `./path args...`, `$f args...`, `{ ... } args...` or `( ... ) args...`.
 type Call struct {
-	P       Pos
-	Name    string
-	Caret   bool
-	HeadVar *VarRef
-	Args    []*Word
-	Redirs  []*Redir
+	P        Pos
+	Name     string
+	Caret    bool
+	HeadVar  *VarRef
+	HeadAtom Atom // { ... } or ( ... ) where $f could stand
+	Args     []*Word
+	Redirs   []*Redir
 
 	target  target
 	fn      *FnDef
@@ -192,9 +193,11 @@ type IndexArg struct {
 
 // indexExprs is every expression in v's indexes, including those of
 // variables used as indexes.
-func (v *VarRef) indexExprs() []Expr {
+func (v *VarRef) indexExprs() []Expr { return indexExprs(v.Index) }
+
+func indexExprs(index []Index) []Expr {
 	var xs []Expr
-	for _, ix := range v.Index {
+	for _, ix := range index {
 		for _, a := range []*IndexArg{ix.Key, ix.Lo, ix.Hi} {
 			switch {
 			case a == nil:
@@ -208,8 +211,12 @@ func (v *VarRef) indexExprs() []Expr {
 	return xs
 }
 
-type SubAtom struct{ X Expr }   // $( ... )
-type GroupAtom struct{ X Expr } // ( ... )
+type SubAtom struct{ X Expr } // $( ... )
+// GroupAtom is ( ... ), optionally indexed like a variable: (f)[0].
+type GroupAtom struct {
+	X     Expr
+	Index []Index
+}
 type ListAtom struct{ Items []*Word }
 type MapAtom struct {
 	Keys []string

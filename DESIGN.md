@@ -85,14 +85,14 @@ All builtins are fns. A user `fn` of the same name shadows a builtin (planned: a
 | word containing `/` (`./x`, `/bin/x`) | external by path |
 | bare word bound to a fn (user `fn` or builtin) | fn call |
 | any other bare word | external from PATH |
-| `$name` followed by args | call a fn value (lambda) |
-| `call $name` | call a fn value with no args |
+| `$name`, `{ }` or `( )` followed by args | call a fn value (lambda) |
+| `call $name`, `call { }`, `call ( )` | call a fn value with no args |
 | `$` `(` `[` `"` `'` number, glob | expression statement (REPL prints value) |
 
 - fn definitions are visible in their whole enclosing block (hoisted), so resolution never depends on line order. At the REPL a definition applies to later lines.
 - `[` at the head is a list, so the external `[` is not reachable as `[ -f x ]`. Use `test -f x`.
-- The arg count of every call to a named fn or builtin is checked before running, on every branch; the value from a preceding `|>`, and stdin for a converter after `|`, counts as the last arg. Only args whose count is unknown until run time (a glob, `...$xs`) defer the check. Externals and fn values (`$f`) are not checked.
-- A bare `$f` is always the value itself, never a call; that keeps `if $c { $a } else { $b }` returning `$a` whatever it holds. `$f x`, `x |> $f`, `cmd | $f` (no args; its stdin is the pipe) and `try $f` call it. `call $f` calls it with no args; it takes exactly one `$name` (indexing allowed: `call $m[k]`). Before `call`, `{ $f; ... }` dropped the fn silently; now that is an `unused value` error with a hint.
+- The arg count of every call to a named fn or builtin is checked before running, on every branch; the value from a preceding `|>`, and stdin for a converter after `|`, counts as the last arg. Only args whose count is unknown until run time (a glob, `...$xs`) defer the check. Externals and fn values (`$f`) are not checked; a lambda written after `|>` or `|` is, since its params are in the source.
+- A bare `$f` is always the value itself, never a call; that keeps `if $c { $a } else { $b }` returning `$a` whatever it holds. `$f x`, `x |> $f`, `cmd | $f` (no args; its stdin is the pipe) and `try $f` call it. A lambda `{ }` or a group `( )` stands where `$f` does, with the same meaning: alone it is a value; `{|x| ... } 1`, `(twice $inc) 1`, `x |> { ... }`, `x |> (add 2)` and `cmd | { ... }` call it. `call` calls one of them with no args: `call $f`, `call $m[k]`, `call { ... }` (like a JS IIFE; its `let`s stay inside), `call (mk)`. A `( )` whose value is not a fn raises at run time, like `$f`. Before `call`, `{ $f; ... }` dropped the fn silently; now that is an `unused value` error with a hint.
 - Fns are values. `fn f` also binds `$f`, from its definition on, like `let` (the call name `f` is hoisted, `$f` is not); inside its body `$f` is the fn itself. A later `let f` shadows `$f` only; the call `f` is unaffected. Builtins are values too (`map $lines`) unless a variable of that name is in scope. `call` has no value. See NAMESPACES.md for the alternatives considered.
 
 ### Shadowing
@@ -262,17 +262,18 @@ A `$nil` that reaches an external arg, a string or arithmetic still raises, so m
 | `$( ... )` | the output of a pipeline as `str`, trailing newline trimmed; its value is dropped |
 | `'...'`, `"..."`, `\\...`, `$\\...` | strings — see Quoting and strings |
 
-### `[` : list vs glob vs index
+### `[` : list vs index
 
 Decided by whether `[` is glued to the previous atom.
 
 | shape | meaning |
 |---|---|
 | `[` after space / start / `(` / `[` | list or map |
-| `[` glued to `$name` or `$name[..]` | index: `$xs[0]`, `$m[k][0]` |
-| `[` glued to any other atom | glob character class: `*.[ch]`, `img[0-9].png` |
+| `[` glued to `$name` or `( )`, or to another index | index: `$xs[0]`, `$m[k][0]`, `(f x)[0]`, `(cmd \| from_json)[name]` |
+| `[` glued to any other atom | compile error: `*.[ch]`, `"x"[0]` |
 
-- A glob that starts with a class needs a prefix: `./[ab]*`.
+- There are no glob character classes; `*.[ch]` is an error with a hint: write `*.c *.h`, or `?` for one char. They took a third meaning for `[`, and `(f)[0]` read as a glob. Richer patterns are deferred (see Not for now).
+- `( )` is a value like `$name`, so it indexes the same way: `let out = (xx 3 4)[0]`.
 - Inside quotes, `[` is literal.
 
 ## Quoting and strings
@@ -608,6 +609,7 @@ a |> f x y    ≡   f x y a
 - Each `|>` passes the value of everything before it as the last arg of the stage after it.
   - left of `|>`: anything with a value. An external there is a **compile error**: `ls has no value: ... | lines`.
   - right of `|>`: any fn or fn value (`|> $f`). An external is a **compile error**: `jq reads stdin, not a value: print $x | jq`.
+  - a lambda right after `|>` or `|` is called in place, like `$f`: `ls | lines |> { print $it[0] (len $it) }`, `cmd | { lines |> len }`. It names the whole value, unlike `each`, which calls it per item. After `|>` it takes the value as its param (`$it` or `{|x| }`); after `|` it takes none and reads stdin, so `$it` there is a compile error.
 - The pipeline's value is its last stage's value. A stage's output not followed by `|` goes to the pipeline's stdout; a stage's stdin not preceded by `|` is the pipeline's stdin.
 - bytes → value: `$( ... )`, or a converter reading stdin: `ls | lines`.
 - value → bytes: only `print` and `to_json`. An expression or a value-only builtin on the left of `|` is a **compile error**: `print it: print $x | cmd`. No implicit conversion, no conversion rules.
@@ -769,7 +771,7 @@ chain     = and { '||' and }
 and       = not { '&&' not }
 not       = '!' not | pipeline
 pipeline  = stage { ( '|' | '|>' ) stage }
-stage     = call | expr
+stage     = call | expr | lambda                # lambda only after | or |>: called like $f
 call      = head { word | redir }            # fn or external, resolved statically from head
 head      = [ '^' ] NAME | PATHWORD
           | '$' NAME                          # call a fn value; needs >= 1 word, or a | / |> stage
@@ -932,7 +934,7 @@ let count = len $files
 print "$today: $count files"
 
 ls -la | grep go                    # byte pipe
-ls *.[ch]                           # glob class, glued
+ls *.c *.h                          # globs; no match is an error
 grep -q TODO main.go || print 'no todos'
 
 if ends_with .go $name && grep -q TODO $name {
@@ -1059,6 +1061,7 @@ let n = len $xs + 1         # len takes 1 arg, got 3: use (len $xs) + 1
 fn ls ...a { ls ...$a }     # warning: ls calls itself, did you mean ^ls?
 fn split x { ... }          # warning: shadows /usr/bin/split
 { $f; print done }          # unused value: $f is not called; to call a fn value: call $f
+{ print hi }; print done    # unused value: { } is a fn value, not a group; to run it now: call { ... }
 ```
 
 Runtime: non-bool value in a condition, external not found.
@@ -1107,7 +1110,7 @@ Sources: `schemesh/README.md`, `doc/faq/faq.md`, `doc/shell/syntax.md`, `doc/she
 | A line continues only when brackets are unbalanced or it ends with an operator. | The REPL decides at Enter; it can't look at the next line. | Line continuation: open bracket or trailing `\|`, `\|>`, `&&`, `\|\|`. | applied |
 | `(values '{...})` shows how a shell line was parsed. | Parse results should be inspectable. | `explain` builtin. | applied |
 | cwd and env are per job; `{ }` scopes `cd`; `global cd` changes the shell. | Scoped cwd/env fits immutable design. | `in_dir`, scope frames. | applied |
-| `[` is a subshell in shell syntax, `(` in Scheme syntax, and a glob class; the docs give `''[a-z]*` as a workaround. | One bracket must not carry several meanings. | `[` glued = glob/index, after space = list/map. | applied |
+| `[` is a subshell in shell syntax, `(` in Scheme syntax, and a glob class; the docs give `''[a-z]*` as a workaround. | One bracket must not carry several meanings. | `[` glued = index, after space = list/map; no glob classes. | applied |
 | Status values: `(ok v)`, `(failed 2)`, `(killed sigint)`, `(stopped sigtstp)`. | Exit code and signal are different outcomes. | An error map has exactly one of `code` / `signal`. | applied |
 | POSIX syntax kept for commands: `&&`, `\|\|`, redirections. | Daily command syntax should stay familiar. | `&&`, `\|\|`, `!` with condition-position rule. | applied |
 | Two syntaxes switched by `( )` / `{ }` and `#!shell` / `#!scheme`. Documented limits: command args from Scheme must be string / list / closure; REPL accepts what files don't; file syntax guessed from its name. | Mode switching creates many boundary rules. | One grammar; one call syntax for fns and externals. | validated |
@@ -1129,6 +1132,7 @@ Not for now (may be added later):
 
 - modules (`use`) — fns live in the rc file or the script itself
 - `**` recursive glob
+- richer glob patterns, replacing the removed `[ch]` classes: a `glob 'pattern'` builtin taking the pattern as a str (`...(glob '*.[ch]')`), or elvish-style modifiers glued to a wildcard (`?[set:ch]`, `*[type:dir]`, `*[nomatch-ok]`); `nomatch-ok` would also let `*.c *.h` pass when one has no match
 - floats
 - regex
 - builtins beyond the current list — added as needed

@@ -5,6 +5,7 @@ package history
 import (
 	"context"
 	"database/sql"
+	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,7 +21,8 @@ CREATE TABLE IF NOT EXISTS history (
 	id   INTEGER PRIMARY KEY,
 	cmd  TEXT    NOT NULL,
 	cwd  TEXT    NOT NULL DEFAULT '',
-	time INTEGER NOT NULL
+	time INTEGER NOT NULL,
+	session INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS dirs (
 	path TEXT    PRIMARY KEY,
@@ -28,16 +30,28 @@ CREATE TABLE IF NOT EXISTS dirs (
 );`
 
 type Store struct {
-	db  *sql.DB
-	cwd func() string
+	db      *sql.DB
+	cwd     func() string
+	session int64 // tags this shell's rows, so other shells' rows don't break its sequence
+	t0      int64 // reference time of the weights
 
 	mu      sync.Mutex
 	lastID  int64
 	lastDir string         // last dir recorded by Visit
+	here    string         // dir of the last Visit, the context of Suggest
 	latest  map[string]use // cmd -> its newest use
 	entries []string       // unique, oldest first; rebuilt when dirty
 	dirty   bool
+
+	// Uses weighted by recency, for Suggest.
+	freq  map[string]float64
+	inDir map[[2]string]float64 // {cwd, cmd}
+	after map[[2]string]float64 // {previous cmd of the session, cmd}
+	tail  map[int64]string      // session -> its last cmd
 }
+
+// halfLife is the age in seconds at which a use counts half.
+const halfLife = 7 * 24 * 3600
 
 type use struct {
 	id   int64
@@ -73,7 +87,19 @@ func Open(path string, cwd func() string) (*Store, error) {
 			return nil, err
 		}
 	}
-	s := &Store{db: db, cwd: cwd, latest: map[string]use{}}
+	// Databases from before sessions were recorded lack the column.
+	if _, err := db.Exec("SELECT session FROM history LIMIT 0"); err != nil {
+		if _, err := db.Exec("ALTER TABLE history ADD COLUMN session INTEGER NOT NULL DEFAULT 0"); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	now := time.Now()
+	s := &Store{
+		db: db, cwd: cwd, session: now.UnixNano(), t0: now.Unix(),
+		latest: map[string]use{}, freq: map[string]float64{},
+		inDir: map[[2]string]float64{}, after: map[[2]string]float64{}, tail: map[int64]string{},
+	}
 	if err := s.seedDirs(); err != nil {
 		db.Close()
 		return nil, err
@@ -90,7 +116,7 @@ func (s *Store) Close() error { return s.db.Close() }
 // load reads rows added since the last load (by this or another shell).
 // The caller holds s.mu, or s is not shared yet.
 func (s *Store) load() error {
-	rows, err := s.db.Query("SELECT id, cmd, cwd, time FROM history WHERE id > ? ORDER BY id", s.lastID)
+	rows, err := s.db.Query("SELECT id, cmd, cwd, time, session FROM history WHERE id > ? ORDER BY id", s.lastID)
 	if err != nil {
 		return err
 	}
@@ -98,10 +124,16 @@ func (s *Store) load() error {
 	for rows.Next() {
 		var u use
 		var cmd string
-		if err := rows.Scan(&u.id, &cmd, &u.cwd, &u.time); err != nil {
+		var session int64
+		if err := rows.Scan(&u.id, &cmd, &u.cwd, &u.time, &session); err != nil {
 			return err
 		}
 		s.latest[cmd], s.lastID, s.dirty = u, u.id, true
+		w := math.Exp2(float64(u.time-s.t0) / halfLife)
+		s.freq[cmd] += w
+		s.inDir[[2]string{u.cwd, cmd}] += w
+		s.after[[2]string{s.tail[session], cmd}] += w
+		s.tail[session] = cmd
 	}
 	return rows.Err()
 }
@@ -116,7 +148,7 @@ func (s *Store) Add(cmd string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.db.Exec("INSERT INTO history (cmd, cwd, time) VALUES (?, ?, ?)", cmd, cwd, time.Now().Unix()); err != nil {
+	if _, err := s.db.Exec("INSERT INTO history (cmd, cwd, time, session) VALUES (?, ?, ?, ?)", cmd, cwd, time.Now().Unix(), s.session); err != nil {
 		return err
 	}
 	return s.load()
@@ -168,6 +200,7 @@ func (s *Store) seedDirs() error {
 func (s *Store) Visit(dir string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.here = dir
 	if dir == s.lastDir {
 		return nil
 	}
@@ -210,20 +243,43 @@ func (s *Store) Dirs() []Dir {
 	return out
 }
 
-// Suggest returns the newest entry that extends buf, for the editor's gray
-// hint. It only reads memory, so it is fast; the editor still runs it
+// Suggest returns the entry extending buf that is most likely next, for
+// the editor's gray hint. Among the matches, it mixes each one's share of
+// all uses, of the uses in the current dir and of the uses right after
+// this shell's previous command; uses fade with age. Ties go to the newer
+// entry. It only reads memory, so it is fast; the editor still runs it
 // asynchronously like any Suggester.
 func (s *Store) Suggest(ctx context.Context, buf string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	es := s.sorted()
-	for i := len(es) - 1; i >= 0; i-- {
+	type match struct {
+		cmd                string
+		freq, inDir, after float64
+	}
+	var ms []match
+	var sum match
+	prev := s.tail[s.session]
+	for i, e := range s.sorted() {
 		if i%1024 == 0 && ctx.Err() != nil {
 			return "", ctx.Err()
 		}
-		if e := es[i]; len(e) > len(buf) && strings.HasPrefix(e, buf) {
-			return e, nil
+		if len(e) > len(buf) && strings.HasPrefix(e, buf) {
+			m := match{e, s.freq[e], s.inDir[[2]string{s.here, e}], s.after[[2]string{prev, e}]}
+			ms = append(ms, m)
+			sum.freq, sum.inDir, sum.after = sum.freq+m.freq, sum.inDir+m.inDir, sum.after+m.after
 		}
 	}
-	return "", nil
+	share := func(x, total float64) float64 {
+		if total == 0 {
+			return 0
+		}
+		return x / total
+	}
+	best, bestScore := "", -1.0
+	for _, m := range ms { // oldest first, so >= lets the newer win ties
+		if sc := 0.2*share(m.freq, sum.freq) + 0.3*share(m.inDir, sum.inDir) + 0.5*share(m.after, sum.after); sc >= bestScore {
+			best, bestScore = m.cmd, sc
+		}
+	}
+	return best, nil
 }

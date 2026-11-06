@@ -109,7 +109,7 @@ fn map x { $x }                               # fn이 builtin map을 가림
 
 | 하고 싶은 것 | 쓰는 법 |
 |---|---|
-| 변수에 든 fn 값을 호출 | `$f x`, `x \|> $f`, `cmd \| $f` (stdin이 파이프), `call $f` (인자 없음) |
+| 변수에 든 fn 값을 호출 | `$f x`, `x \|> $f`, `cmd \| $f` (stdin이 파이프), `call $f` (인자 없음). `$f` 자리에 `{ }`, `( )`도 같은 뜻 |
 | fn 값 자체를 넘김 | `$f` (bare `$f`는 절대 호출이 아니다) |
 | fn, builtin을 값으로 넘김 | `map $double`, `map $lines` |
 | 파이프라인을 값으로 만듦 | 람다: `let count = {\|x\| $x \|> lines \|> len }` |

@@ -473,7 +473,17 @@ func (in *Interp) atomValue(a Atom, env *Env, io ioCtx) (Value, error) {
 	case *SubAtom:
 		return in.capture(a.X, env, io)
 	case *GroupAtom:
-		return in.eval(a.X, env, io, false)
+		v, err := in.eval(a.X, env, io, false)
+		if err != nil || len(a.Index) == 0 {
+			return v, err
+		}
+		if v, err = in.applyIndex(v, a.Index, env, io); err != nil {
+			if _, ok := err.(*Raise); ok {
+				return nil, err
+			}
+			return nil, raisef(a.X.pos(), "( ): "+err.Error())
+		}
+		return v, nil
 	case *ListAtom:
 		l := &List{}
 		for _, w := range a.Items {
@@ -550,7 +560,19 @@ func (in *Interp) lookupVar(v *VarRef, env *Env, io ioCtx) (Value, error) {
 			return nil, raisef(v.Pos, "undefined variable $"+v.Name)
 		}
 	}
-	for _, ix := range v.Index {
+	val, err := in.applyIndex(val, v.Index, env, io)
+	if err != nil {
+		if _, ok := err.(*Raise); ok {
+			return nil, err
+		}
+		return nil, raisef(v.Pos, "$"+v.Name+": "+err.Error())
+	}
+	return val, nil
+}
+
+// applyIndex applies indexes and slices to val in order.
+func (in *Interp) applyIndex(val Value, ixs []Index, env *Env, io ioCtx) (Value, error) {
+	for _, ix := range ixs {
 		var err error
 		if ix.Key != nil {
 			var key Value
@@ -561,10 +583,7 @@ func (in *Interp) lookupVar(v *VarRef, env *Env, io ioCtx) (Value, error) {
 			val, err = in.slice(ix, val, env, io)
 		}
 		if err != nil {
-			if _, ok := err.(*Raise); ok {
-				return nil, err
-			}
-			return nil, raisef(v.Pos, "$"+v.Name+": "+err.Error())
+			return nil, err
 		}
 	}
 	return val, nil
@@ -661,7 +680,7 @@ func escapeGlob(s string) string {
 	return b.String()
 }
 
-// glob expands a word with active * ? [..] relative to the shell's cwd.
+// glob expands a word with active * ? relative to the shell's cwd.
 // Hidden files match only when the pattern's last part starts with '.'.
 func (in *Interp) glob(w *Word, env *Env, io ioCtx) ([]string, error) {
 	var b strings.Builder

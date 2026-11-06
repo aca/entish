@@ -430,16 +430,30 @@ func (p *parser) pipeline(c ctx) Expr {
 		p.skipSpaceNL()
 		p.checkMore(op)
 		st := p.stage(c)
-		// `|> $f` calls the fn value with the piped value, `| $f` with no
-		// args (its stdin is the pipe).
+		// `|> $f`, `|> { ... }` and `|> ( ... )` call the fn value with the piped value,
+		// `| $f` etc. with no args (its stdin is the pipe).
 		if we, ok := st.(*WordExpr); ok {
 			if v, ok := singleVar(we.W); ok {
 				st = &Call{P: we.W.Pos, HeadVar: v}
+			} else if a, ok := singleFnAtom(we.W); ok {
+				st = &Call{P: we.W.Pos, HeadAtom: a}
 			}
 		}
 		pl.Ops = append(pl.Ops, op)
 		pl.Stages = append(pl.Stages, st)
 	}
+}
+
+// singleFnAtom reports a word that is one { ... } or ( ... ): a fn value
+// that can stand where $f does.
+func singleFnAtom(w *Word) (Atom, bool) {
+	if len(w.Parts) == 1 {
+		switch a := w.Parts[0].(type) {
+		case *LambdaAtom, *GroupAtom:
+			return a, true
+		}
+	}
+	return nil, false
 }
 
 func singleVar(w *Word) (*VarRef, bool) {
@@ -477,6 +491,11 @@ func (p *parser) stage(c ctx) Expr {
 	w := p.word(modeValue, c)
 	if v, ok := singleVar(w); ok && p.argAhead(c) {
 		call := &Call{P: w.Pos, HeadVar: v}
+		p.args(call, c)
+		return call
+	}
+	if a, ok := singleFnAtom(w); ok && p.argAhead(c) {
+		call := &Call{P: w.Pos, HeadAtom: a}
 		p.args(call, c)
 		return call
 	}
@@ -1013,7 +1032,13 @@ func (p *parser) word(mode wordMode, c ctx) *Word {
 		case ch == '$':
 			add(p.dollar())
 		case ch == '[':
-			add(p.globClass())
+			g, ok := w.Parts[len(w.Parts)-1].(*GroupAtom)
+			if !ok {
+				p.fail("a glued [ indexes only $name or ( ): bind the value first, or quote a literal '['; glob classes ([ch]) are not supported: *.c *.h")
+			}
+			for p.peek() == '[' {
+				g.Index = append(g.Index, p.index())
+			}
 		case ch == '(':
 			p.fail("quote words containing '(' — or put a space before it")
 		case ch == '{':
@@ -1062,18 +1087,6 @@ func (p *parser) bare(c ctx) Atom {
 	}
 	s := string(p.src[start:p.pos])
 	return &LitAtom{S: s, Glob: strings.ContainsAny(s, "*?")}
-}
-
-func (p *parser) globClass() Atom {
-	start := p.pos
-	for p.peek() != ']' {
-		if p.eof() || p.peek() == '\n' {
-			p.failAt(start, "unterminated [ in a glob")
-		}
-		p.pos++
-	}
-	p.pos++
-	return &LitAtom{S: string(p.src[start:p.pos]), Glob: true}
 }
 
 func (p *parser) rawString() Atom {

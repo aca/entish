@@ -132,7 +132,13 @@ func (in *Interp) callee(c *Call, env *Env, io ioCtx) (Value, error) {
 		}
 		return f, nil
 	}
-	f, err := in.lookupVar(c.HeadVar, env, io)
+	var f Value
+	var err error
+	if c.HeadAtom != nil {
+		f, err = in.atomValue(c.HeadAtom, env, io)
+	} else {
+		f, err = in.lookupVar(c.HeadVar, env, io)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +146,7 @@ func (in *Interp) callee(c *Call, env *Env, io ioCtx) (Value, error) {
 	case *Closure, *Builtin:
 		return f, nil
 	}
-	return nil, raisef(c.P, "$"+c.HeadVar.Name+" is a "+typeName(f)+", not a fn")
+	return nil, raisef(c.P, callName(c)+" is a "+typeName(f)+", not a fn")
 }
 
 func (in *Interp) fnArgs(c *Call, env *Env, io ioCtx, carry Value, has bool) ([]Value, error) {

@@ -69,6 +69,9 @@ func (c *checker) vexpr(e Expr, sc *vscope) {
 		if e.HeadVar != nil {
 			c.vref(e.HeadVar, sc)
 		}
+		if e.HeadAtom != nil {
+			c.vatom(e.HeadAtom, sc)
+		}
 		for _, w := range e.Args {
 			c.vword(w, sc)
 		}
@@ -125,6 +128,7 @@ func (c *checker) vatom(a Atom, sc *vscope) {
 		c.vexpr(a.X, sc)
 	case *GroupAtom:
 		c.vexpr(a.X, sc)
+		c.vindex(a.Index, sc)
 	case *ListAtom:
 		for _, w := range a.Items {
 			c.vword(w, sc)
@@ -148,11 +152,8 @@ func (c *checker) vparts(parts []StrPart, sc *vscope) {
 	}
 }
 
-func (c *checker) vref(v *VarRef, sc *vscope) {
-	if v.Env {
-		return // env vars belong to the scope frame, not to lexical scope
-	}
-	for _, ix := range v.Index {
+func (c *checker) vindex(index []Index, sc *vscope) {
+	for _, ix := range index {
 		for _, a := range []*IndexArg{ix.Key, ix.Lo, ix.Hi} {
 			switch {
 			case a == nil:
@@ -163,6 +164,13 @@ func (c *checker) vref(v *VarRef, sc *vscope) {
 			}
 		}
 	}
+}
+
+func (c *checker) vref(v *VarRef, sc *vscope) {
+	if v.Env {
+		return // env vars belong to the scope frame, not to lexical scope
+	}
+	c.vindex(v.Index, sc)
 	switch {
 	case sc.has(v.Name):
 		return

@@ -107,7 +107,7 @@ env GOOS=linux go build ./...                 # env for one command: the externa
 | `"x $name ${name}_y $m[key]"` | variables only, never code; escapes `\n \t \e \xHH \u{..}` |
 | `\\raw line` | multiline raw string, one prefix per line, no escapes |
 | `$\\line $name` | multiline line with variable interpolation |
-| `*.go` `img?.png` `*.[ch]` | glob; expands to args in calls, is a list elsewhere; no match is an error |
+| `*.go` `img?.png` | glob (`*` `?`; no `[ch]` classes); expands to args in calls, is a list elsewhere; no match is an error |
 | `['a' 1 $x]`, `[k: 'v']` | list, map; strings inside must be quoted |
 | `...$xs`, `...(expr)` | spread a list into args |
 | `$( cmd )` | its output as `str`; its value is dropped |
@@ -172,7 +172,7 @@ Matching is smart-case. Enter puts the selected entry into the input without run
 
 ### Suggestions
 
-The newest history entry that extends the input is shown in gray after the cursor; Ctrl-F takes it. The source is a generic, asynchronous `Suggester`, so it can be replaced (e.g. by an AI tool) without blocking typing.
+The history entry that extends the input and is most likely next is shown in gray after the cursor; Ctrl-F takes it. Each match is scored by how often it ran, how often in the current directory and how often right after this shell's previous command; older uses count less (half after a week), and ties go to the newest. The source is a generic, asynchronous `Suggester`, so it can be replaced (e.g. by an AI tool) without blocking typing.
 
 ### Completion
 

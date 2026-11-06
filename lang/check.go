@@ -119,7 +119,7 @@ func (c *checker) call(e *Call, s *fnScope) {
 	switch {
 	case e.Caret: // ^name or ^$name
 		e.target = tExternal
-	case e.HeadVar != nil:
+	case e.HeadVar != nil, e.HeadAtom != nil:
 		e.target = tVar
 	default:
 		if d := s.lookup(e.Name); d != nil {
@@ -147,6 +147,9 @@ func (c *checker) call(e *Call, s *fnScope) {
 	if e.HeadVar != nil {
 		c.atom(e.HeadVar, s)
 	}
+	if e.HeadAtom != nil {
+		c.atom(e.HeadAtom, s)
+	}
 	for _, w := range e.Args {
 		c.word(w, s)
 	}
@@ -157,18 +160,20 @@ func (c *checker) call(e *Call, s *fnScope) {
 	}
 }
 
-// callBuiltin rewrites `call $f` into a call of $f with no args, so it runs
-// like `$f x` does.
+// callBuiltin rewrites `call $f`, `call { ... }` and `call ( ... )` into a
+// call of the fn value with no args, so it runs like `$f x` does.
 func (c *checker) callBuiltin(e *Call) {
 	var v *VarRef
+	var a Atom
 	if len(e.Args) == 1 && len(e.Redirs) == 0 {
 		v, _ = singleVar(e.Args[0])
+		a, _ = singleFnAtom(e.Args[0])
 	}
-	if v == nil {
-		c.errorf(e.P, "call takes one fn variable: call $f")
+	if v == nil && a == nil {
+		c.errorf(e.P, "call takes one fn value: call $f, call { ... }, call (f x)")
 		return
 	}
-	e.Name, e.HeadVar, e.Args, e.target, e.builtin = "", v, nil, tVar, nil
+	e.Name, e.HeadVar, e.HeadAtom, e.Args, e.target, e.builtin = "", v, a, nil, tVar, nil
 }
 
 func (c *checker) word(w *Word, s *fnScope) {
@@ -183,6 +188,9 @@ func (c *checker) atom(a Atom, s *fnScope) {
 		c.expr(a.X, s)
 	case *GroupAtom:
 		c.expr(a.X, s)
+		for _, x := range indexExprs(a.Index) {
+			c.expr(x, s)
+		}
 	case *VarRef:
 		for _, x := range a.indexExprs() {
 			c.expr(x, s)
@@ -284,6 +292,12 @@ func callName(e Expr) string {
 		if e.HeadVar != nil {
 			return "$" + e.HeadVar.Name
 		}
+		if _, ok := e.HeadAtom.(*LambdaAtom); ok {
+			return "{ }"
+		}
+		if e.HeadAtom != nil {
+			return "( )"
+		}
 		return e.Name
 	case *Pipeline:
 		return callName(e.Stages[len(e.Stages)-1])
@@ -321,6 +335,12 @@ func (c *checker) unused(e Expr) {
 		if v, ok := singleVar(we.W); ok {
 			c.errorf(e.pos(), "unused value: $%s is not called; to call a fn value: call $%s", v.Name, v.Name)
 			return
+		}
+		if len(we.W.Parts) == 1 {
+			if _, ok := we.W.Parts[0].(*LambdaAtom); ok {
+				c.errorf(e.pos(), "unused value: { } is a fn value, not a group; to run it now: call { ... }")
+				return
+			}
 		}
 	}
 	c.errorf(e.pos(), "unused value")
@@ -410,6 +430,9 @@ func (c *checker) checkExpr(e Expr) {
 		c.arity(e)
 		if e.HeadVar != nil {
 			c.checkAtom(e.HeadVar)
+		}
+		if e.HeadAtom != nil {
+			c.checkAtom(e.HeadAtom)
 		}
 		for _, w := range e.Args {
 			c.checkWord(w)
@@ -505,6 +528,9 @@ func (c *checker) checkAtom(a Atom) {
 		c.checkExpr(a.X)
 	case *GroupAtom:
 		c.value(a.X)
+		for _, x := range indexExprs(a.Index) {
+			c.value(x)
+		}
 	case *VarRef:
 		for _, x := range a.indexExprs() {
 			c.value(x)
@@ -538,6 +564,15 @@ func (c *checker) arity(e *Call) {
 		}
 	case tBuiltin:
 		name, min, max = e.Name, e.builtin.Min, e.builtin.Max
+	case tVar:
+		la, ok := e.HeadAtom.(*LambdaAtom)
+		if !ok {
+			return
+		}
+		name, min, max = "this fn", len(la.Params), len(la.Params)
+		if la.Rest != "" {
+			max = -1
+		}
 	default:
 		return
 	}
@@ -571,6 +606,14 @@ func (c *checker) arity(e *Call) {
 		got += " (including the value from |>)"
 	case e.stdin:
 		got += " (including stdin)"
+	}
+	if la, ok := e.HeadAtom.(*LambdaAtom); ok {
+		switch {
+		case max == 0:
+			got += ": use $it or { |x| ... } to take the value"
+		case la.usesIt && n == 0:
+			got += ": $it needs a value, x |> { ... }; after | a fn reads stdin instead: cmd | { lines |> ... }"
+		}
 	}
 	c.errorf(e.P, "%s takes %s args, %s", name, want, got)
 }
