@@ -1,0 +1,75 @@
+#!/usr/bin/env entish
+# A todo app, the "hello world" of frameworks, as a CLI.
+#
+#   todo.ent add buy milk     add an item
+#   todo.ent                  list items
+#   todo.ent done 2           mark item 2 done
+#   todo.ent rm 2             remove item 2
+#   todo.ent clean            remove done items
+#
+# Items live in $TODO_FILE (default ~/.todo.json) as a JSON list of
+# {"text": .., "done": ..}. Nothing is mutated: each command reads the list,
+# builds a new one and writes it back.
+
+let file = if $TODO_FILE == $nil { "$HOME/.todo.json" } else { $TODO_FILE }
+
+fn load {
+    if test -f $file { cat $file | from_json } else { [] }
+}
+
+fn save items {
+    to_json $items > $file
+}
+
+fn fold f acc xs {
+    if (len $xs) == 0 { $acc } else { fold $f ($f $acc $xs[0]) $xs[1:] }
+}
+
+fn join sep xs {
+    fold { |a x| if $a == '' { $x } else { "$a$sep$x" } } '' $xs
+}
+
+# [[i: 1 item: ..] [i: 2 item: ..] ..], so items can be addressed by number
+fn numbered xs {
+    fold { |acc x| [...$acc [i: ((len $acc) + 1) item: $x]] } [] $xs
+}
+
+fn show items {
+    if (len $items) == 0 {
+        print 'nothing to do'
+    } else {
+        ...(numbered $items) |> each { |e|
+            let mark = if $e[item][done] { 'x' } else { ' ' }
+            print "$e[i]. [$mark] $e[item][text]"
+        }
+    }
+}
+
+# the index arg as a num that names an existing item
+fn pick items arg {
+    let n = num $arg
+    if $n < 1 || $n > (len $items) { fail "no item $arg" }
+    $n
+}
+
+fn main cmd rest {
+    let items = load
+    if $cmd == 'list' {
+        show $items
+    } else if $cmd == 'add' {
+        if (len $rest) == 0 { fail 'add what?' }
+        save [...$items [text: (join ' ' $rest) done: $false]]
+    } else if $cmd == 'done' {
+        let n = pick $items $rest[0]
+        save (...(numbered $items) |> each { |e| if $e[i] == $n { assoc done $true $e[item] } else { $e[item] } } |> list)
+    } else if $cmd == 'rm' {
+        let n = pick $items $rest[0]
+        save (...(numbered $items) |> each { if $it[i] != $n { $it[item] } } |> list)
+    } else if $cmd == 'clean' {
+        save (...$items |> each { if !$it[done] { $it } } |> list)
+    } else {
+        fail "unknown command $cmd: use add, list, done, rm or clean"
+    }
+}
+
+if (len $args) == 0 { main list [] } else { main $args[0] $args[1:] }

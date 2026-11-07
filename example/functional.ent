@@ -1,0 +1,83 @@
+#!/usr/bin/env entish
+# Functional style: pure fns, immutable data, composition, no loops.
+# Fns take their data as args; values stream between them with |>.
+
+# ---- a toolkit from recursion
+
+fn fold f acc xs {
+    if (len $xs) == 0 { $acc } else { fold $f ($f $acc $xs[0]) $xs[1:] }
+}
+fn range a b { if $a >= $b { [] } else { [$a ...(range ($a + 1) $b)] } }
+fn take n xs { if $n == 0 || (len $xs) == 0 { [] } else { [$xs[0] ...(take ($n - 1) $xs[1:])] } }
+fn zip xs ys {
+    if (len $xs) == 0 || (len $ys) == 0 { [] } else { [[$xs[0] $ys[0]] ...(zip $xs[1:] $ys[1:])] }
+}
+fn flatten xs { fold { |acc x| [...$acc ...$x] } [] $xs }
+fn iterate n f x { if $n == 0 { [] } else { [$x ...(iterate ($n - 1) $f ($f $x))] } }
+fn sum xs { fold { |a x| $a + $x } 0 $xs }
+fn join sep xs { fold { |a x| if $a == '' { "$x" } else { "$a$sep$x" } } '' $xs }
+fn get k default m { try { $m[$k] } catch e { $default } }
+
+# pipe f g h is { h (g (f $it)) }: fns composed left to right
+fn pipe ...fs { { |x| fold { |acc f| $f $acc } $x $fs } }
+
+# ---- composition
+
+let odd_squares_sum = pipe { |xs| (...$xs |> each { if $it % 2 == 1 { $it } } |> list) } { |xs| (...$xs |> each { $it * $it } |> list) } $sum
+print 'odd squares 1..9:' ($odd_squares_sum (range 1 10))
+
+fn add a b { $a + $b }
+let inc = { add 1 $it }                       # partial application is a lambda
+print 'inc 41:          ' ($inc 41)
+print 'builtins too:    ' (...['a' 'bb' 'ccc'] |> each $len |> list)
+
+# ---- sequences
+
+let fibs = ...(iterate 12 { |p| [$p[1] ($p[0] + $p[1])] } [0 1]) |> each { $it[0] } |> list
+print 'fibs:            ' $fibs
+print 'take 3:          ' (take 3 $fibs)
+print 'zip:             ' (zip ['a' 'b' 'c'] [1 2 3])
+print 'flatten:         ' (flatten [[1 2] [] [3] [4 5]])
+
+fn collatz n {
+    if $n == 1 {
+        [1]
+    } else if $n % 2 == 0 {
+        [$n ...(collatz ($n / 2))]
+    } else {
+        [$n ...(collatz (3 * $n + 1))]
+    }
+}
+print 'collatz 6:       ' (collatz 6)
+
+# ---- immutable data: every change is a new value
+
+let a = [1 2 3]
+let b = [...$a 4]
+let cfg = [host: 'localhost'  port: 80]
+let cfg2 = assoc port 8080 $cfg
+print 'lists:           ' $a $b
+print 'maps:            ' $cfg $cfg2
+
+# ---- records: group, aggregate, report
+
+let people = [
+    [name: 'ann'  team: 'core'  age: 31]
+    [name: 'bob'  team: 'web'   age: 25]
+    [name: 'cy'   team: 'core'  age: 40]
+    [name: 'di'   team: 'web'   age: 28]
+    [name: 'ed'   team: 'ops'   age: 35]
+]
+
+fn group_by key xs {
+    fold { |g x| let k = $x[$key]; assoc $k [...(get $k [] $g) $x] $g } [:] $xs
+}
+
+let teams = group_by team $people
+...(keys $teams) |> each { |t|
+    let members = $teams[$t]
+    let names = join ', ' (...$members |> each { $it[name] } |> list)
+    let ages = ...$members |> each { $it[age] } |> list
+    let avg = round 1 ((sum $ages) / (len $ages))
+    print "$t: $names (avg age $avg)"
+}

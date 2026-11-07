@@ -1,0 +1,13 @@
+# external output as values: count the lines of "a\nb\n"
+#--- a converter after | turns bytes into values, one per line
+printf 'a\nb\n' | lines |> count |> print
+#--- $( ) gives one str, trailing newline trimmed: "a\nb"
+print (len $(printf 'a\nb\n'))
+#--- bytes straight into a builtin that takes args: compile error
+printf 'a\nb\n' | len
+#--- an external before |>: compile error
+printf 'a\nb\n' |> count
+#--- JSON needs from_json: one value per JSON document
+printf '[1,2]' | from_json |> each { len $it } |> print
+#--- NDJSON streams
+printf '1\n2\n' | from_json |> count |> print

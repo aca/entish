@@ -1,0 +1,24 @@
+#!/usr/bin/env entish
+# fns are values: closures, higher-order fns, a map of fns as a tiny "object".
+
+fn adder n { { $it + $n } }                 # returns a closure over $n
+fn compose f g { { $f ($g $it) } }
+fn twice f { compose $f $f }
+
+let add10 = adder 10
+let inc_then_double = compose { $it * 2 } { $it + 1 }
+
+print 'add10 5         =' ($add10 5)
+print 'inc then double =' ($inc_then_double 5)
+let add20 = twice $add10
+print 'twice add10 1   =' ($add20 1)
+
+# closures capture by value; a later let makes a new binding
+let n = 1
+let get_n = { $n }
+let n = 2
+print 'captured n      =' (call $get_n) "(n is now $n)"
+
+let shape = [area: { |w h| $w * $h } name: 'rect']
+print "$shape[name] area =" ($shape[area] 3 4)
+print 'pipeline        =' (...[1 2 3 4] |> each $add10 |> each { if $it % 2 == 0 { $it } } |> list)

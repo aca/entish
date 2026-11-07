@@ -1,0 +1,16 @@
+#!/usr/bin/env entish
+# Mounted filesystems as a tree: findmnt -J gives nested JSON, and a
+# recursive fn walks it. Sizes are exact until rounded.
+
+fn show fs indent {
+    let gib = round 1 ($fs[size] / 1024 ** 3)
+    let used = if $fs[size] == 0 { 0 } else { round 1 ($fs[used] * 100 / $fs[size]) }
+    print "$indent$fs[target]  $fs[fstype]  $gib GiB  $used%"
+    match $fs {
+        [children: cs] => ...$cs |> each { show $it "$indent  " }
+        _              => $nil
+    }
+}
+
+let mounts = findmnt -J -b --real -o TARGET,FSTYPE,SIZE,USED | from_json
+...$mounts[filesystems] |> each { show $it '' }

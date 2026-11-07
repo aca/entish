@@ -1,0 +1,61 @@
+#!/usr/bin/env entish
+# Conway's Game of Life on a small torus. The grid is a list of rows of 0
+# and 1; each generation is a new grid. No loops and no mutation: ranges are
+# value streams, and generations are a recursion.
+
+# the nums a, a+1, .. b-1, as a stream
+fn range a b { if $a < $b { $a; range ($a + 1) $b } }
+
+fn sum xs { match $xs { [] => 0; [x ...rest] => $x + (sum $rest) } }
+
+fn join sep xs {
+    match $xs {
+        []           => ''
+        [x]          => "$x"
+        [x ...rest]  => { let tail = join $sep $rest; "$x$sep$tail" }
+    }
+}
+
+# the cell at r c, wrapping around the edges
+fn cell grid r c {
+    let h = len $grid
+    let w = len $grid[0]
+    $grid[($r + $h) % $h][($c + $w) % $w]
+}
+
+fn neighbors grid r c {
+    let ds = [[-1 -1] [-1 0] [-1 1] [0 -1] [0 1] [1 -1] [1 0] [1 1]]
+    sum (...$ds |> each {|d| cell $grid ($r + $d[0]) ($c + $d[1]) } |> list)
+}
+
+fn step grid {
+    range 0 (len $grid) |> each {|r|
+        range 0 (len $grid[0]) |> each {|c|
+            let n = neighbors $grid $r $c
+            let alive = $grid[$r][$c] == 1
+            if $n == 3 || $alive && $n == 2 { 1 } else { 0 }
+        } |> list
+    } |> list
+}
+
+fn show grid {
+    ...$grid |> each {|row| join '' (...$row |> each { if $it == 1 { '#' } else { '.' } } |> list) } |> print
+}
+
+fn population grid { sum (...$grid |> each { sum $it } |> list) }
+
+fn run grid gen n {
+    print "generation $gen, population" (population $grid)
+    show $grid
+    if $gen < $n { run (step $grid) ($gen + 1) $n }
+}
+
+let glider = [
+    [0 1 0 0 0 0]
+    [0 0 1 0 0 0]
+    [1 1 1 0 0 0]
+    [0 0 0 0 0 0]
+    [0 0 0 0 0 0]
+    [0 0 0 0 0 0]
+]
+run $glider 0 4

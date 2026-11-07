@@ -1,0 +1,1 @@
+let ys = ...$xs |> each {|x| ($x * 3 + 7) % 97 } |> list

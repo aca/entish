@@ -1,0 +1,14 @@
+# f writes "out" to stdout; its value is 'val'
+fn f { echo out; 'val' }
+#--- | takes the output only; the value is dropped
+f | tr a-z A-Z
+#--- |> takes the values only; the output goes to stdout
+f |> each { print "got $it" }
+#--- $( ) captures the output only
+let s = $(f)
+print "captured: $s"
+#--- let takes the value; the output goes to stdout
+let v = f
+print "v: $v"
+#--- an external has no value: compile error
+let v = ^echo out

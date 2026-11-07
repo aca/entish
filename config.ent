@@ -1,0 +1,64 @@
+# Built into the binary; runs at interactive startup, before ~/.entrc.
+# Edit and rebuild:  go build -o entish .
+#
+fn ls ...args { ^ls --color=auto ...$args }
+fn vifm ...a { cd $(^vifm ...$a --choose-dir -) }
+fn f ...a { cd $(^vifm ...$a --choose-dir -) }
+fn s { cd $(fzf.src) }
+fn eachl f { lines |> each $f }          # ls | eachl { echo $it }: f for each line of stdin, as it arrives
+abbr v nvim
+abbr vim nvim
+
+abbr gco 'git checkout'
+abbr ll 'ls -al'
+abbr svc 'sudo systemctl'
+abbr svcu 'systemctl --user'
+abbr mv 'mv -vn'
+abbr cp 'cp -avn'
+abbr dc 'cd'
+abbr mkdir 'mkdir -p'
+abbr ta 'tmux attach -t'
+
+fn fzf_cd { cd $(try { fd --hidden --type d --max-depth 9 --no-ignore -0 | fzf --read0 --height=50% --min-height 14 } catch e { echo '.' }) }
+bind alt-c { fzf_cd }
+bind ctrl-x { print $it | pbcopy -n }
+bind ctrl-v { $(pbpaste -n) }
+
+fn fzf_file { try { $(fd --hidden --type f -0 | fzf --read0 --height=50% --min-height 14) } catch e { '' } }
+bind ctrl-t { fzf_file }
+
+bind alt-q { [input: "shq add $it"] }
+
+fn x v {cd $(scratch $v)}
+
+
+
+
+
+
+
+
+
+
+
+fn range a b {
+    if $a >= $b { [] } else { [$a ...(range ($a + 1) $b)] }
+}
+
+fn fold f acc xs {
+    if (len $xs) == 0 { $acc } else { fold $f ($f $acc $xs[0]) $xs[1:] }
+}
+
+fn sum xs { fold { |a x| $a + $x } 0 $xs }
+fn reverse xs { fold { |a x| [$x ...$a] } [] $xs }
+fn join sep xs { fold { |a x| if $a == '' { "$x" } else { "$a$sep$x" } } '' $xs }
+
+
+# fn ls ...args { ^ls --color=auto ...$args; [ 1 2 3 ] }
+
+fn times n f { if $n > 0 { call $f; times ($n - 1) $f } }
+
+# ---- standard library, for now: to be registered properly later
+fn has xs x { match $xs { [] => $false; [y ...rest] => $y == $x || (has $rest $x) } }
+fn get m k default { try { $m[$k] } catch e { $default } }
+fn chars s { print $s | ^fold -w1 | lines }    # ^: the fn fold above shadows the external

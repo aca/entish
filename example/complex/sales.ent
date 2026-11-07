@@ -1,0 +1,81 @@
+#!/usr/bin/env entish
+# A sales report from NDJSON: records stream in through from_json, are
+# grouped and summed with exact numbers, sorted by a merge sort written in
+# entish, and printed as a table by the external column.
+
+let data =
+    \\{"date":"2026-10-01","region":"seoul","product":"tea","qty":3,"price":4.5}
+    \\{"date":"2026-10-01","region":"busan","product":"coffee","qty":2,"price":5.2}
+    \\{"date":"2026-10-02","region":"seoul","product":"coffee","qty":5,"price":5.2}
+    \\{"date":"2026-10-02","region":"daegu","product":"tea","qty":1,"price":4.5}
+    \\{"date":"2026-10-02","region":"busan","product":"cake","qty":4,"price":6.1}
+    \\{"date":"2026-10-03","region":"seoul","product":"cake","qty":2,"price":6.1}
+    \\{"date":"2026-10-03","region":"daegu","product":"coffee","qty":7,"price":5.2}
+    \\{"date":"2026-10-03","region":"busan","product":"tea","qty":6,"price":4.5}
+    \\{"date":"2026-10-04","region":"seoul","product":"tea","qty":2,"price":4.5}
+    \\{"date":"2026-10-04","region":"daegu","product":"cake","qty":3,"price":6.1}
+
+fn fold f acc xs { match $xs { [] => $acc; [x ...rest] => fold $f ($f $acc $x) $rest } }
+fn get m k default { try { $m[$k] } catch e { $default } }
+fn add_to m k v { assoc $k ((get $m $k 0) + $v) $m }
+
+# a stable merge sort; before a b says a comes first
+fn msort before xs {
+    let n = len $xs
+    if $n <= 1 {
+        $xs
+    } else {
+        let h = ($n - $n % 2) / 2
+        merge $before (msort $before $xs[:$h]) (msort $before $xs[$h:])
+    }
+}
+fn merge before a b {
+    match [$a $b] {
+        [[] _] => $b
+        [_ []] => $a
+        [[x ...xs] [y ...ys]] => if ($before $y $x) { [$y ...(merge $before $a $ys)] } else { [$x ...(merge $before $xs $b)] }
+    }
+}
+
+# ---- load: one record per line, with its amount
+
+let rows = print $data | from_json |> each { assoc amount ($it[qty] * $it[price]) $it } |> list
+let grand = fold { |t r| $t + $r[amount] } 0 $rows
+print (len $rows) 'records, total' $grand
+print ''
+
+# ---- by region, largest first
+
+fn sum_by key rows { fold { |m r| add_to $m $r[$key] $r[amount] } [:] $rows }
+
+fn table title key {
+    let sums = sum_by $key $rows
+    let lines = ...(keys $sums) |> each { [name: $it  total: $sums[$it]] } |> list
+    let sorted = msort { |a b| $a[total] > $b[total] } $lines
+    print $title total share
+    ...$sorted |> each {
+        let share = round 1 ($it[total] * 100 / $grand)
+        print $it[name] $it[total] "$share%"
+    }
+}
+table region region | column -t
+print ''
+table product product | column -t
+print ''
+
+# ---- by day, as a bar chart
+
+fn bar n { if $n > 0 { '#'; bar ($n - 1) } }
+fn join xs { fold { |a x| "$a$x" } '' $xs }
+
+let days = sum_by date $rows
+...(keys $days) |> each {|d|
+    let n = round 0 ($days[$d] / 5)
+    let b = join (bar $n |> list)
+    print $d $b $days[$d]
+} | column -t
+print ''
+
+# ---- the most frequent product and region pairs, through externals
+
+print $data | from_json |> each { "$it[product] $it[region]" } |> print | sort | uniq -c | sort -rn | head -3

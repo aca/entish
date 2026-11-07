@@ -1,0 +1,163 @@
+#!/usr/bin/env entish
+# An expression calculator: a tokenizer that emits tokens as a stream, a
+# recursive-descent parser that builds an AST of maps, an evaluator with
+# exact numbers, and a printer. Parse fns return [node rest-of-tokens].
+#
+#   expr  := term (('+' | '-') term)*
+#   term  := unary (('*' | '/') unary)*
+#   unary := '-' unary | power
+#   power := atom ('^' unary)?
+#   atom  := num | name | '(' expr ')'
+
+fn fold f acc xs { match $xs { [] => $acc; [x ...rest] => fold $f ($f $acc $x) $rest } }
+fn has xs x { match $xs { [] => $false; [y ...rest] => $y == $x || (has $rest $x) } }
+fn join sep xs { fold { |a x| if $a == '' { "$x" } else { "$a$sep$x" } } '' $xs }
+
+# entish has no string slicing; the external fold splits a str into its chars
+# (^ because the fn fold above shadows it)
+fn chars s { print $s | ^fold -w1 | lines }
+
+fn is_digit c { $c >= '0' && $c <= '9' || $c == '.' }
+fn is_alpha c { $c >= 'a' && $c <= 'z' || $c == '_' }
+
+# span: the leading items of xs for which f holds, and the rest
+fn span f xs {
+    match $xs {
+        [x ...rest] if ($f $x) => { let s = span $f $rest; [[$x ...$s[0]] $s[1]] }
+        _ => [[] $xs]
+    }
+}
+
+# ---- tokens: emitted one at a time
+
+fn tokens cs {
+    match $cs {
+        [] => {}
+        [' ' ...rest] => tokens $rest
+        [c ..._] if (is_digit $c) => {
+            let s = span $is_digit $cs
+            [num: (num (join '' $s[0]))]
+            tokens $s[1]
+        }
+        [c ..._] if (is_alpha $c) => {
+            let s = span $is_alpha $cs
+            [name: (join '' $s[0])]
+            tokens $s[1]
+        }
+        [c ...rest] if (has ['+' '-' '*' '/' '^' '(' ')'] $c) => {
+            [op: $c]
+            tokens $rest
+        }
+        [c ..._] => fail "unexpected character '$c'"
+    }
+}
+
+# ---- parser
+
+fn expr ts { let t = term $ts; expr_rest $t[0] $t[1] }
+fn expr_rest left ts {
+    match $ts {
+        [[op: o] ...rest] if $o == '+' || $o == '-' => {
+            let t = term $rest
+            expr_rest [op: $o l: $left r: $t[0]] $t[1]
+        }
+        _ => [$left $ts]
+    }
+}
+
+fn term ts { let u = unary $ts; term_rest $u[0] $u[1] }
+fn term_rest left ts {
+    match $ts {
+        [[op: o] ...rest] if $o == '*' || $o == '/' => {
+            let u = unary $rest
+            term_rest [op: $o l: $left r: $u[0]] $u[1]
+        }
+        _ => [$left $ts]
+    }
+}
+
+fn unary ts {
+    match $ts {
+        [[op: '-'] ...rest] => { let u = unary $rest; [[neg: $u[0]] $u[1]] }
+        _ => power $ts
+    }
+}
+
+fn power ts {
+    let b = atom $ts
+    match $b[1] {
+        [[op: '^'] ...rest] => { let e = unary $rest; [[op: '^' l: $b[0] r: $e[0]] $e[1]] }
+        _ => $b
+    }
+}
+
+fn atom ts {
+    match $ts {
+        [[num: n] ...rest] => [[num: $n] $rest]
+        [[name: v] ...rest] => [[name: $v] $rest]
+        [[op: '('] ...rest] => {
+            let e = expr $rest
+            match $e[1] {
+                [[op: ')'] ...after] => [$e[0] $after]
+                _ => fail "expected ')'"
+            }
+        }
+        [[op: o] ..._] => fail "unexpected '$o'"
+        [] => fail 'unexpected end of input'
+    }
+}
+
+# ---- evaluate and show
+
+fn evaluate node vars {
+    match $node {
+        [num: n] => $n
+        [name: v] => { try { $vars[$v] } catch e { fail "unknown variable $v" } }
+        [neg: x] => 0 - (evaluate $x $vars)
+        [op: o l: a r: b] => {
+            let x = evaluate $a $vars
+            let y = evaluate $b $vars
+            match $o {
+                '+' => $x + $y
+                '-' => $x - $y
+                '*' => $x * $y
+                '/' => $x / $y
+                '^' => $x ** $y
+            }
+        }
+    }
+}
+
+fn show node {
+    match $node {
+        [num: n] => str $n
+        [name: v] => $v
+        [neg: x] => { let s = show $x; "(- $s)" }
+        [op: o l: a r: b] => { let l = show $a; let r = show $b; "($o $l $r)" }
+    }
+}
+
+fn calc src vars {
+    let ts = tokens (chars $src |> list) |> list
+    let p = expr $ts
+    if (len $p[1]) > 0 { fail 'unexpected input after the expression' }
+    print $src '  =>  ' (show $p[0]) '  =  ' (evaluate $p[0] $vars)
+}
+
+let vars = [x: 3  y: 4  rate: 0.07]
+let inputs = [
+    '1 + 2 * 3'
+    '(1 + 2) * 3'
+    '2 ^ 3 ^ 2'
+    '-x ^ 2'
+    'x * x + y * y'
+    '1 / 3 + 1 / 6'
+    '1000 * (1 + rate) ^ 3'
+    '1 +'
+    '2 * (3 + 4'
+    'z + 1'
+    '3 % 4'
+]
+...$inputs |> each {|s|
+    try { calc $s $vars } catch e { print $s '  =>  error:' $e[msg] }
+}

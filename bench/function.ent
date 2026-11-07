@@ -1,0 +1,2 @@
+fn bench_calc x { ($x * 3 + 7) % 97 }
+let ys = ...$xs |> each {|x| bench_calc $x } |> list

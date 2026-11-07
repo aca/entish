@@ -1,0 +1,8 @@
+# trailing newlines
+#--- $( ) trims one trailing newline: "a\n\n" is 3
+let s = $(printf 'a\n\n\n')
+print (len $s)
+#--- lines drops the final empty line only
+printf 'a\n\n\n' | lines |> list |> to_json
+#--- print adds a newline
+print 'a' | od -c

@@ -1,0 +1,20 @@
+# Wrong operator on a user fn: no compile error, no runtime error.
+# files used to print (fn files { ^ls }); it was refactored to emit values.
+fn files { ^ls /etc | lines }
+fn version { 'v1.2.3' }
+#--- $( ) on a fn that only emits values: '' with no error
+let tag = $(version)
+print "tag: release-$tag"
+#--- the comparison is just false
+if $(version) == 'v1.2.3' { print 'is 1.2.3' } else { print 'not 1.2.3' }
+#--- | on a fn that only emits values: the command reads empty stdin
+files | wc -l
+#--- sort and head succeed on empty input too
+files | sort | head -3
+#--- grep exits 1 on empty input, so this one does surface
+files | grep passwd
+#--- correct: let and |> take the values
+let v = version
+print "tag: release-$v"
+files |> count |> print
+files |> each { print $it } | grep passwd

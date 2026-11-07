@@ -1,0 +1,16 @@
+#!/usr/bin/env entish
+# Splitting a bill with exact numbers: no float drift, rounding only when asked.
+
+fn sum xs { if (len $xs) == 0 { 0 } else { $xs[0] + (sum $xs[1:]) } }
+
+let paid = [ann: 312.45  bob: 89.10  cy: 124.09]
+let people = keys $paid
+let total = sum (...$people |> each { $paid[$it] } |> list)
+let share = $total / (len $people)
+
+print 'total:' $total
+print 'share:' $share '≈' (round 2 $share)        # 13141/75: the exact value is kept
+...$people |> each { |p| print "  $p" (round 2 ($paid[$p] - $share)) }
+
+print 'balances sum to 0:' ((sum (...$people |> each { $paid[$it] - $share } |> list)) == 0)
+print '0.1 + 0.2 == 0.3: ' (0.1 + 0.2 == 0.3)

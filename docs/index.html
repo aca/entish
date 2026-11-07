@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>entish(1)</title>
+<style>
+  :root {
+    --paper: #f4f1ea;
+    --ink: #24231f;
+    --dim: #8a867c;
+    --accent: #0f6b5c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font: 17px/1.55 "IBM Plex Mono", "JetBrains Mono", ui-monospace, Menlo, monospace;
+  }
+  a { color: var(--accent); }
+  .page {
+    max-width: 78ch;
+    margin: 0 auto;
+    padding: 32px 20px 64px;
+  }
+  .rule {
+    display: flex;
+    justify-content: space-between;
+    color: var(--dim);
+  }
+  header.rule { border-bottom: 1px solid var(--ink); padding-bottom: 6px; }
+  footer.rule { border-top: 1px solid var(--ink); padding-top: 6px; margin-top: 48px; }
+  h2, h3 { font: inherit; margin: 2em 0 0.6em; }
+  h2 { font-weight: bold; letter-spacing: 0.08em; }
+  h3 { margin-left: 4ch; font-style: italic; }
+  section > p, section > ul, section > pre, section > dl { margin-left: 4ch; }
+  ul { padding-left: 2ch; list-style: "- "; }
+  pre {
+    font: inherit;
+    font-size: 0.9em;
+    margin-top: 0.6em;
+    margin-bottom: 1.4em;
+    padding: 0.2em 0 0.2em 2ch;
+    border-left: 2px solid var(--accent);
+    overflow-x: auto;
+  }
+  .warn { color: #a3361a; }
+  dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.2em 2ch; }
+  dd { margin: 0; }
+  .demo { margin: 1em 0 2em 4ch; border: 1px solid var(--dim); }
+  .demo-screen {
+    margin: 0; border: 0; padding: 12px; min-height: 11.6em;
+    font-size: 0.8em; line-height: 1.6; white-space: pre; overflow-x: auto;
+  }
+  .demo-screen .fg-green, .demo-screen .fg-brightgreen { color: var(--accent); }
+  .demo-screen .fg-magenta, .demo-screen .fg-brightmagenta { color: #805379; }
+  .demo-screen .fg-cyan { color: #216b80; }
+  .demo-screen .fg-red { color: #a3361a; }
+  .demo-screen .bold { font-weight: bold; }
+  .demo-screen .reverse, .demo-screen .cursor { color: var(--paper); background: var(--ink); }
+  kbd { font: inherit; color: var(--accent); }
+  @media (max-width: 640px) {
+    body { font-size: 14px; }
+    section > p, section > ul, section > pre, section > dl, h3 { margin-left: 1ch; }
+    .demo { margin-left: 1ch; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+
+<header class="rule"><span>ENTISH(1)</span><span>User Commands</span><span>ENTISH(1)</span></header>
+
+  <p class="warn">WARNING: AI vibe-coded software.</p>
+
+<section>
+  <h2>NAME</h2>
+  <p>entish - scripting language and interactive shell for my next 10 years</p>
+</section>
+
+
+<section>
+  <h2>MOTIVATION</h2>
+  <p>For Unix users, every task begins at the shell. It is rarely taken
+  seriously as a programming language, yet it is the glue of countless
+  critical systems, and one of the few languages people still write by hand
+  every day in AI era.</p>
+  <p>Most of that code targets bash and other POSIX shells, designed decades
+  ago and full of gotchas and limitations.</p>
+  <p>fish, nushell, elvish, xonsh, rash and others have tried to do better.
+  entish is one more attempt. It began as a personal project to rebuild
+  elvish from scratch.</p>
+  <p>Source: <a href="https://github.com/aca/entish">github.com/aca/entish</a></p>
+</section>
+
+<section>
+  <h2>KEY IDEAS</h2>
+
+  <h3>Types</h3>
+  <p>POSIX shells cannot handle real data types, and that is the source of
+  many gotchas. entish has types like a general-purpose programming
+  language: str, num, bool, list, map, fn and nil. It never converts between
+  them implicitly.</p>
+
+  <h3>Two streams</h3>
+  <p>The pipe | is not just connecting stdout to the next stdin. 
+  From a programming point of view, it is function
+  composition: each command takes input and produces output, and | chains
+  them into a larger function. But the UNIX pipe carries only bytes, so every stage has
+  to print and parse text. entish keeps the UNIX pipe and extends it: every
+  command has two output streams, a byte stream and a value stream. External commands write only to the byte
+  stream; fns and builtins can also emit typed values to the value stream.
+  | connects byte streams, |&gt; connects value streams.</p>
+  <p>Both are real streams. All stages of a pipeline run concurrently, and
+  values flow to the next stage one at a time as they are produced, just
+  like lines through a Unix pipe.</p>
+  <p>Many modern shells have similar mechanisms. entish is more explicit:
+  the two never mix, and nothing converts between them implicitly. Keeping
+  them apart avoids a whole class of gotchas.</p>
+<pre># nushell 0.112.2
+$ echo 1 | od -c
+0000000
+
+# elvish 0.19.0
+$ put 1 | od -c
+0000000
+
+# PowerShell 7.6.5
+$ @{a=1} | od -c
+0000000  \n   N   a   m   e  ...   V   a   ..
+
+# entish
+$ 1 | od -c
+1:1: a value cannot be piped into
+$ 1 |> print | od -c
+0000000   1  \n
+0000002
+</pre>
+  <p>entish treats both pipes as function application. As in a Unix pipe,
+  f's input is its stdin or value input, not its args:</p>
+<pre>a | f | g     ≡  g(f(a))
+a |&gt; f |&gt; g   ≡  g(f(a))</pre>
+  <p>To pass the value as an arg, use $_. The stage runs once per value with
+  $_ bound to it:</p>
+<pre>a |&gt; f $_ |&gt; g $_   ≡  g (f a)</pre>
+  <p>No loops, no word splitting, no quoting rules. Compare with bash:</p>
+<pre># bash: $( ) output is split on spaces
+$ for f in $(find . -name '*.log'); do echo "[$f]"; done
+[./c.log]
+[./my]
+[logs/a]
+[b.log]
+# entish: a line is one value
+$ find . -name '*.log' | lines |&gt; echo "[$_]"
+[./c.log]
+[./my logs/a b.log]
+
+# bash: a glob with no match is passed on as is
+$ for f in *.mkv; do echo "got $f"; done
+got *.mkv
+# entish: it is an error
+$ *.mkv |&gt; echo $_
+entish: no matches for *.mkv
+
+# bash: the loop runs in a subshell, so n is lost
+$ n=0; find . -name '*.log' | while read f; do n=$((n+1)); done; echo $n
+0
+# entish: values, not variables
+$ find . -name '*.log' | lines |&gt; count
+▶ 2</pre>
+</section>
+
+<section>
+  <h2>LANGUAGE</h2>
+  <p>A tour by example. Where an idea comes from another language, the
+  heading says so.</p>
+
+  <h3>Pipelines (from elvish)</h3>
+<pre># | carries bytes, |&gt; carries values; lines turns bytes into values
+$ ls | lines
+▶ main.go
+▶ go.mod
+$ ls | lines |&gt; count
+▶ 2
+
+# per-item work on values: extract the audio of each mp4
+$ ls *.mp4 | lines |&gt; each { |f| ffmpeg -i $f -vn -c:a copy $f.m4a }
+
+# per-item logic: files over 1000 bytes
+# (bash: while read f; do [ "$(stat -c %s "$f")" -gt 1000 ] &amp;&amp; ...)
+$ ls | lines |&gt; each { |f| if (num $(stat -c %s $f)) &gt; 1000 { $f } }
+▶ big.bin
+
+# a list stays a list: no word splitting, names with spaces are safe
+# (bash: mapfile -t, or find -print0 | xargs -0)
+$ let mp4 = ls *.mp4 | lines |&gt; list
+$ ls -1 ...$mp4
+a b.mp4
+c.mp4
+
+# values stream through fns too: every statement of a fn emits
+$ fn tag { each { "x$it" } }
+$ tail -f log | lines |&gt; tag |&gt; print    # each line as it arrives</pre>
+
+  <h3>The item: $_ (from Hack and Perl)</h3>
+<pre># a stage after |&gt; that uses $_ runs once per value; $_ goes where the item goes
+$ ls | lines |&gt; mv $_ $_.bak
+$ ...[1 2 3] |&gt; $_ * 2 |&gt; list
+▶ [2 4 6]</pre>
+
+  <h3>Functional, no loops</h3>
+<pre># each maps and filters; |&gt; list collects, ...$xs spreads
+$ ...[1 2 3 4 5] |&gt; each { if $it % 2 == 1 { $it * $it } } |&gt; list
+▶ [1 9 25]
+
+# recursion instead of loops; a generator is a fn that emits
+$ fn fact n { if $n &lt;= 1 { 1 } else { $n * (fact ($n - 1)) } }
+$ fact 5
+▶ 120
+$ fn evens n { if $n &gt; 0 { evens ($n - 2); $n } }
+$ evens 6 |&gt; list
+▶ [2 4 6]</pre>
+
+  <h3>Conditions</h3>
+<pre># a command is tested by its exit status, ( ) by its value
+$ if grep -q TODO main.go { print todo }
+$ fn big n { $n &gt; 9 }
+$ if (big 10) { print big }
+big
+$ if big 10 { print big }       # compile error: big ends in a value, so as a
+                                # command it always succeeds; to test it: (big ...)</pre>
+
+  <h3>Rational by default (from raku)</h3>
+<pre>$ 0.1 + 0.2 == 0.3
+▶ $true
+$ round 4 (1 / 3)               # no silent rounding
+▶ 0.3333</pre>
+
+  <h3>Multiline strings (from zig)</h3>
+<pre>$ let name = "world"
+$ let py =
+    $\\name = "$name"
+    \\print(f"hello {name}")
+$ print $py | python3 -
+hello world</pre>
+</section>
+
+<section>
+  <h2>EDITOR</h2>
+  <h3>Line editor</h3>
+  <p>Written from scratch. Multi-line and vi-style; insert mode also accepts
+  common emacs keys.</p>
+
+  <h3>Terminal integration</h3>
+  <p>Sets the window title (OSC 2), reports the working directory (OSC 7)
+  and marks prompts and command output (OSC 133), so terminals can open
+  new tabs in the same directory and jump between prompts.</p>
+
+  <h3>History search</h3>
+  <p><kbd>Ctrl-R</kbd> searches command history with fzf-style queries.
+  <kbd>Enter</kbd> puts the selection into your input, ready to edit or run.</p>
+  <figure class="demo" data-demo="history" aria-label="History search recording">
+    <pre class="demo-screen" aria-live="off">~/src/entish&gt;                                11/01/2026 09:15:55 PM
+history: git !log
+&gt; 11-01 21:15  git diff                                ~/src/entish
+  11-01 21:15  git status                              ~/src/entish</pre>
+  </figure>
+
+  <h3>Recent locations</h3>
+  <p><kbd>Ctrl-D</kbd> opens recent directories. Type to filter, then
+  <kbd>Enter</kbd> to jump there.</p>
+  <figure class="demo" data-demo="location" aria-label="Location search recording">
+    <pre class="demo-screen" aria-live="off">~&gt;                                           11/01/2026 09:16:02 PM
+location: src
+&gt; 11-01 21:15  ~/src/entish
+  11-01 21:15  ~/src/website</pre>
+  </figure>
+
+  <h3>Async completion</h3>
+  <p><kbd>Tab</kbd> gets command completions from Fish in the background,
+  including options and their descriptions. Press it again to cycle through matches;
+  <kbd>Enter</kbd> puts the selected one in without running.</p>
+  <figure class="demo" data-demo="completion" aria-label="Async completion recording">
+    <pre class="demo-screen" aria-live="off">~/src/entish&gt; git checkout --t               11/01/2026 09:16:09 PM
+--theirs  (Keep staged changes)  --track  (Track a new branch)</pre>
+  </figure>
+</section>
+
+<section>
+  <h2>SEE ALSO</h2>
+  <dl>
+    <dt><a href="https://elv.sh">elvish</a></dt><dd>value pipelines</dd>
+    <dt><a href="https://github.com/willghatch/racket-rash">rash</a></dt><dd>value pipelines</dd>
+    <dt><a href="https://docs.hhvm.com/hack/expressions-and-operators/pipe">hack</a></dt><dd>pipe topic</dd>
+    <dt><a href="https://raku.org">raku</a></dt><dd>rational numbers</dd>
+    <dt><a href="https://ziglang.org">zig</a></dt><dd>multiline strings</dd>
+    <dt><a href="https://fishshell.com">fish</a></dt><dd>completions</dd>
+  </dl>
+</section>
+
+<footer class="rule"><span>entish</span><span>2026-11-01</span><span>ENTISH(1)</span></footer>
+
+</div>
+<script src="recordings/frames.js" defer></script>
+<script src="demos.js" defer></script>
+</body>
+</html>

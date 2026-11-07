@@ -1,0 +1,8 @@
+#!/usr/bin/env entish
+
+fn xx a b {
+    [$a $b]
+}
+
+let out = (xx 3 4)[0]
+print $out

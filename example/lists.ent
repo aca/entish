@@ -1,0 +1,34 @@
+#!/usr/bin/env entish
+# A small list library written in entish itself: recursion, slices, spread.
+
+fn range a b {
+    if $a >= $b { [] } else { [$a ...(range ($a + 1) $b)] }
+}
+
+fn fold f acc xs {
+    if (len $xs) == 0 { $acc } else { fold $f ($f $acc $xs[0]) $xs[1:] }
+}
+
+fn sum xs { fold { |a x| $a + $x } 0 $xs }
+fn reverse xs { fold { |a x| [$x ...$a] } [] $xs }
+fn join sep xs { fold { |a x| if $a == '' { "$x" } else { "$a$sep$x" } } '' $xs }
+
+fn qsort xs {
+    if (len $xs) <= 1 {
+        $xs
+    } else {
+        let p = $xs[0]
+        let rest = $xs[1:]
+        [...(qsort (...$rest |> each { if $it < $p { $it } } |> list)) $p ...(qsort (...$rest |> each { if $it >= $p { $it } } |> list))]
+    }
+}
+
+let xs = range 1 11
+print 'range:  ' $xs
+print 'sum:    ' (sum $xs)
+print 'squares:' (...$xs |> each { $it * $it } |> list)
+print 'evens:  ' (...$xs |> each { if $it % 2 == 0 { $it } } |> list)
+print 'reverse:' (reverse $xs)
+print 'join:   ' (join ', ' $xs)
+print 'qsort:  ' (qsort [5 3 9 1 5 0 -2 7])
+print 'words:  ' (qsort ['pear' 'apple' 'fig' 'banana'])

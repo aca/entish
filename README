@@ -1,0 +1,186 @@
+entish
+======
+
+WARNING: AI vibe-coded software.
+
+Scripting language and interactive shell for my next 10 years.
+Ideas stolen from many different languages.
+
+LEARN.md is a short tour, STREAMS.md the two-stream model, DESIGN.md the
+whole design (TODO marks what is not built yet).
+
+Lang
+====
+
+Byte pipelines
+--------------
+
+    # standard unix byte pipelines
+    $ ls *.mp4 | lines |> each { |f|        # | lines: stdout -> one value per line
+        # extract audio
+        ffmpeg -i $f -vn -c:a copy $f.m4a
+    }
+
+
+The item: $_ (from Hack and Perl)
+---------------------------------
+
+    # a stage after |> that uses $_ runs once per value; $_ goes where the item goes
+    $ ls *.mp4 | lines |> ffmpeg -i $_ -vn -c:a copy $_.m4a
+    $ ls | lines |> mv $_ $_.bak
+    $ ...[1 2 3] |> $_ * 2 |> list
+    ▶ [2 4 6]
+
+
+Two streams (from elvish / rash)
+--------------------------------
+
+    # every command emits output (bytes) and values (data)
+    # | passes output, |> passes values; nothing converts between them
+    $ ls | lines            # lines turns output into values
+    ▶ main.go
+    ▶ go.mod
+    $ ls | lines |> count
+    ▶ 2
+
+    # per-item logic on real values: files over 1000 bytes
+    # (bash: while read f; do [ "$(stat -c %s "$f")" -gt 1000 ] && ...)
+    $ ls | lines |> each { |f| if (num $(stat -c %s $f)) > 1000 { $f } }
+    ▶ big.bin
+
+    # a list stays a list: no word splitting, names with spaces are safe
+    # (bash: mapfile -t, or find -print0 | xargs -0)
+    $ let mp4 = ls *.mp4 | lines |> list
+    $ ls -1 ...$mp4
+    a b.mp4
+    c.mp4
+
+    # values stream through fns too: every statement of a fn emits
+    $ fn tag { each { "x$it" } }
+    $ tail -f log | lines |> tag |> print    # each line as it arrives
+
+
+Functional, no loops
+--------------------
+
+    # a fn writes output and emits values; each operator takes one
+    $ fn build { go build -o app .; 'app' }   # output to stdout, value 'app'
+    $ let bin = build                        # $(build) would take the output
+
+    # each maps and filters; |> list collects, ...$xs spreads
+    $ ...[1 2 3 4 5] |> each { if $it % 2 == 1 { $it * $it } } |> list
+    ▶ [1 9 25]
+
+    # recursion instead of loops; a generator is a fn that emits
+    $ fn fact n { if $n <= 1 { 1 } else { $n * (fact ($n - 1)) } }
+    $ fact 5
+    ▶ 120
+    $ fn evens n { if $n > 0 { evens ($n - 2); $n } }
+    $ evens 6 |> list
+    ▶ [2 4 6]
+
+    # fns are values: named fns and builtins too
+    $ fn double x { $x * 2 }
+    $ ...[1 2 3] |> each $double |> list
+    ▶ [2 4 6]
+
+
+Conditions (from ysh)
+---------------------
+
+    # a command is tested by its exit status, ( ) by its value
+    $ if grep -q TODO main.go { print todo }
+    $ fn big n { $n > 9 }
+    $ if (big 10) { print big }
+    big
+    $ if big 10 { print big }       # compile error: big ends in a value, so as a
+                                    # command it always succeeds; to test it: (big ...)
+
+
+Rational by default (from raku)
+-------------------------------
+
+    $ 0.1 + 0.2 == 0.3
+    ▶ $true
+
+    $ 1 / 3 * 4
+    ▶ 4/3
+
+    # no silent rounding; round explicitly
+    $ round 4 (1 / 3)
+    ▶ 0.3333
+
+
+Pattern matching
+----------------
+
+    # check the shape of a value and take it apart; no arm matching raises
+    $ fn g ...args {
+        match $args {
+          []             => git status -sb
+          ['co' branch]  => git checkout $branch
+          ['l' ...rest]  => git log --oneline ...$rest
+          _              => git ...$args
+        }
+      }
+    $ match [status: 'ok' n: 3] { [status: 'ok' n: n] if $n > 0 => $n; _ => 0 }
+    ▶ 3
+
+
+Code as text: source, src
+-------------------------
+
+    # source: a literal path, read and checked with the program
+    $ source ~/.config/entish/git.ent
+    # at the REPL, run it again after editing the file: fns are redefined
+
+    # src: the source of a fn or lambda, as written
+    $ fn check body { if !(call $body) { let s = src $body; fail "check failed: $s" } }
+    $ let n = 0
+    $ check { $n > 0 }
+    error: check failed: { $n > 0 }
+
+
+Strings
+-------
+
+    # "..." interpolates variables only; code in a string is a compile error
+    $ let today = $(date +%F)
+    $ print "today $today"
+    $ print "today $(date +%F)"     # error: a string interpolates variables, never code
+
+Multiline strings (from zig)
+----------------------------
+
+    $ let name = "entish"
+    $ echo (
+        $\\name = "$name"
+        \\print(f"hello {name}")
+      ) | python3 -
+    hello entish
+
+
+Editor
+======
+
+- Vim by default
+- Key bindings: `bind ctrl-x { print $it | wl-copy -n }` (a fn with a param
+  gets the input); a str the fn returns is inserted at the cursor:
+  `bind ctrl-v { $(wl-paste -n) }`; a map `[input: str]` replaces the input:
+  `bind alt-q { [input: "shq add $it"] }`. Keys are `ctrl-a`..`ctrl-z` and `alt-c`.
+- the bracket at the cursor and its pair are underlined; brackets in strings
+  and comments don't count
+- an open completion menu narrows as you type (fuzzy); descriptions from fish
+  completions show in their own column
+- the window title is the directory at the prompt and the command while it runs
+- `|` on an empty line inserts the last input before it (`echo 3 |`), to pipe
+  it again
+
+Features
+========
+- uncaught errors show the source line, every failed stage of the pipeline
+  and the fn calls they came out of
+- async direnv integration
+- async completion; arguments of external commands are completed by fish (`complete -C`) when fish is on PATH; command names and file names match ignoring case when nothing matches as typed
+
+

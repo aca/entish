@@ -1,0 +1,28 @@
+#!/usr/bin/env entish
+# Word frequency: externals produce bytes (|), entish counts with maps (|>),
+# print turns the result back into bytes for sort and head.
+#
+#   wordfreq.ent FILE [N]
+
+fn fold f acc xs {
+    if (len $xs) == 0 { $acc } else { fold $f ($f $acc $xs[0]) $xs[1:] }
+}
+
+fn get m k default {
+    try { $m[$k] } catch e { $default }
+}
+
+fn tally words {
+    fold { |m w| assoc $w ((get $m $w 0) + 1) $m } [:] $words
+}
+
+let file = $args[0]
+let n = if (len $args) > 1 { $args[1] } else { 10 }
+
+let words = cat $file | tr -cs 'A-Za-z' '\n' | tr 'A-Z' 'a-z' | lines |> each { if $it != '' { $it } } |> list
+let counts = tally $words
+
+let total = len $words
+let distinct = len (keys $counts)
+print "$file: $total words, $distinct distinct"
+...(keys $counts) |> each { print "$counts[$it] $it" } | sort -rn | head -n $n

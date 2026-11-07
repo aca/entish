@@ -1,0 +1,11 @@
+# a value on the left of |
+#--- list: compile error
+['a' 'b'] | cat
+#--- num: compile error
+1 | cat
+#--- print renders each value; a list in source form
+['a' 'b'] |> print | cat
+#--- one item per line: spread the list into values first
+...['a' 'b'] |> print | cat
+#--- JSON
+['a' 'b'] |> to_json | cat
