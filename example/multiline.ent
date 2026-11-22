@@ -1,0 +1,6 @@
+#!/usr/bin/env entish
+let name = "entish"
+echo (
+  $\\name = "$name"
+  \\print(f"hello {name}")
+) | python3 -

@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>entish(1)</title>
+<meta name="description" content="Explore entish, a functional shell with byte and value pipelines and a built-in vi-style editor.">
+<link rel="stylesheet" href="manual.css">
+</head>
+<body id="top">
+<a class="skip" href="#motivation">Skip to manual</a>
+<div class="page">
+<header class="masthead">
+  <h1>entish(1)</h1>
+  <a class="source" href="https://github.com/aca/entish" aria-label="GitHub">[ GITHUB ]</a>
+</header>
+<main>
+  <div class="overview">
+    <div>
+      <p class="intro">A scripting language and interactive shell for my next 10 years.</p>
+      <pre class="sample" aria-label="Compress each log file and keep the original"><span class="prompt">$</span> *.log |% gzip -k -- $_
+<span class="prompt">$</span> ls -1 *.log.gz
+<span class="result">access.log.gz
+server error.log.gz</span></pre>
+    </div>
+    <pre class="tree" aria-hidden="true">                              .. .  .
+                        %+@%@#%x;;: ..
+                     :+%x@%@@#+@+%+x:..
+                    ;;+%##@##@##x+%xx.;+:;.:
+               :.+x%+%%+#+x++%%x;%##x;####++.
+            ..;xx%#@@%#;:::+:;+:x:+#@x#%@@@x:x.:.. : :
+            :::#@x%@@#@x##+:.+....:%x%@@@@#@#x:+;: :.;..x.+x+
+        ..:;.+:%@x#@@%@%;;;:+.::.;+x@#x#@%@###x+++..;.;;;+%x+;;.
+    .::+:+x+::x:;%#@#@x+%#++:++x:+x+++%#%x+%x%x+#%+x+%;+;x;#+;+;::
+ ..;;x%+xx#++;%%%xx;%+;;;#;#%x+x%x+:...:;xxxx;:+x+xx#@%x+x+x;+x..;.:.
+  .;..+xx@#@%#x@@;++.. :;:;x%;x#%@;|    /.   ....+###%%%@@%;:;:.::.;.
+  ;..::+xx@x@@@%x.           .x++;  \\  |        ..%+###@@%#;xx:.;..:.
+.; .:..+x%%+x@@@#:          ||        \|           /+x@@@x#x%#x..+;:. .
+  . ;x;x:.%x%%xx+ \         ||         ||         //  +x%;;#x;;+%#+#xx;.
+   :.:;xxxx+++. ___\\       ||         ||        /  __ .;+x;+:;;;;x:+.
+    +.x.            _____   ||         ||    _____         ....:+;
+                        ____||          |_____
+                            \\\        /|_
+                             \\\\     ///
+                              \\\\  ////
+                                \\\////
+                                 \///|
+                                 ||/|
+                                 ||||
+                                 ||||
+                                 ||||
+                                 ||||
+                                 ||||
+                             __//|||\\__
+                           __//  | |  \\__
+                      ...___/    |      \___...</pre>
+  </div>
+    <nav class="contents" aria-label="Table of contents">
+      <ul>
+        <li><a href="#motivation">Motivation</a></li>
+        <li><a href="#key-ideas">Key ideas</a></li>
+        <li><a href="#language">Language</a></li>
+        <li><a href="#editor">Editor</a></li>
+        <li><a href="#see-also">See also</a></li>
+      </ul>
+    </nav>
+    <article>
+  <p class="warn"><strong>Warning</strong> AI vibe-coded software.</p>
+<section id="motivation">
+  <h2>Motivation</h2>
+  <p>For Unix users, every task begins at the shell. It is rarely taken
+  seriously as a programming language, yet it is the glue of countless
+  critical systems, and one of the few languages people still write by hand
+  every day in AI era.</p>
+  <p>Most of that code targets bash and other POSIX shells, designed decades
+  ago and full of gotchas and limitations.</p>
+  <p>fish, nushell, elvish, xonsh, rash and others have tried to do better.
+  entish is one more attempt. It began as a personal project to rebuild
+  elvish from scratch.</p>
+</section>
+
+<section id="key-ideas">
+  <h2>Key ideas</h2>
+
+  <h3>Types</h3>
+  <p>Yeah, of course. <code>str</code>, <code>num</code>, <code>bool</code>, <code>list</code>, <code>map</code>, <code>fn</code>, <code>nil</code>.</p>
+
+  <h3>Two streams</h3>
+  <p>The pipe | is not just connecting stdout to the next stdin. 
+  From a programming point of view, it is function
+  composition: each command takes input and produces output, and | chains
+  them into a larger function. But the UNIX pipe carries only bytes, so every stage has
+  to print and parse text. entish keeps the UNIX pipe and extends it: every
+  command has two output streams, a byte stream and a value stream. External commands write only to the byte
+  stream; fns and builtins can also emit typed values to the value stream.
+  | connects byte streams, |&gt; and |% connect value streams.</p>
+  <p>Both are real streams. All stages of a pipeline run concurrently, and
+  values flow to the next stage one at a time as they are produced, just
+  like lines through a Unix pipe.</p>
+  <p>Many modern shells have similar mechanisms. entish is more explicit:
+  the two never mix, and nothing converts between them implicitly. Keeping
+  them apart avoids a whole class of gotchas.</p>
+<pre># nushell 0.112.2
+$ echo 1 | od -c
+0000000
+
+# elvish 0.19.0
+$ put 1 | od -c
+0000000
+
+# PowerShell 7.6.5
+$ @{a=1} | od -c
+0000000  \n   N   a   m   e  ...   V   a   ..
+
+# entish
+$ 1 | od -c
+1:1: a value cannot be piped into
+$ 1 |> print | od -c
+0000000   1  \n
+0000002
+</pre>
+  <h3>Function application</h3>
+  <p>entish treats the pipes as function application. With |, f's input is
+  its stdin. |&gt; gives f the whole stream as its value input. |% runs f
+  once per value, with the value as its last arg; $_ puts it anywhere else:</p>
+<pre>a | f | g        ≡  g(f(a))
+a |% f |% g      ≡  g(f(a)), once per value of a
+a |% f x         ≡  f(x, a)
+a |% f $_ x      ≡  f(a, x)
+a |&gt; count       the number of values of a</pre>
+  <p>Suppose you want filenames based on page titles. In Elixir,
+  <code>|&gt;</code> passes the value on its left as the first argument
+  to the next function. Here each <code>Enum.map</code> takes a list
+  and applies a string operation to every title.</p>
+<pre># Elixir
+["Release Notes", "User Guide"]
+|&gt; Enum.map(&amp;String.downcase/1)
+|&gt; Enum.map(&amp;String.replace(&amp;1, " ", "-"))
+# ["release-notes", "user-guide"]</pre>
+  <p>In entish, spread the list with <code>...</code>, apply the same two
+  operations from left to right with <code>|%</code>, and collect the
+  resulting names with <code>|&gt; list</code>.</p>
+<pre># entish
+$ let titles = ['Release Notes' 'User Guide']
+$ ...$titles |% string:lowercase |% string:replace ' ' '-' |&gt; list
+▶ ['release-notes' 'user-guide']</pre>
+  <p>No loops, no word splitting, no quoting rules. Compare with bash:</p>
+<pre># bash: $( ) output is split on spaces
+$ for f in $(find . -name '*.log'); do echo "[$f]"; done
+[./c.log]
+[./my]
+[logs/a]
+[b.log]
+# entish: a line is one value
+$ find . -name '*.log' | lines |% echo "[$_]"
+[./c.log]
+[./my logs/a b.log]
+
+# bash: a glob with no match is passed on as is
+$ for f in *.mkv; do echo "got $f"; done
+got *.mkv
+# entish: it is an error
+$ *.mkv |% echo $_
+entish: no matches for *.mkv
+
+# bash: the loop runs in a subshell, so n is lost
+$ n=0; find . -name '*.log' | while read f; do n=$((n+1)); done; echo $n
+0
+# entish: values, not variables
+$ find . -name '*.log' | lines |&gt; count
+▶ 2</pre>
+</section>
+
+<section id="language">
+  <h2>Language</h2>
+  <p>A tour by example. Where an idea comes from another language, the
+  heading says so.</p>
+
+  <h3>Pipelines (from elvish)</h3>
+<pre># | carries bytes, |&gt; and |% carry values; lines turns bytes into values
+$ ls | lines
+▶ main.go
+▶ go.mod
+$ ls | lines |&gt; count   # |&gt; gives the whole stream to one stage
+▶ 2
+
+# per-item work on values: extract the audio of each mp4
+$ ls *.mp4 | lines |% { |f| ffmpeg -i $f -vn -c:a copy $f.m4a }
+
+# per-item logic: files over 1000 bytes
+# (bash: while read f; do [ "$(stat -c %s "$f")" -gt 1000 ] &amp;&amp; ...)
+$ ls | lines |% { |f| if (num $(stat -c %s $f)) &gt; 1000 { $f } }
+▶ big.bin
+
+# a list stays a list: no word splitting, names with spaces are safe
+# (bash: mapfile -t, or find -print0 | xargs -0)
+$ let mp4 = (ls *.mp4 | lines |&gt; list)
+$ ls -1 ...$mp4
+a b.mp4
+c.mp4
+
+# values stream through fns too: each in a fn reads the stream from |&gt;
+$ fn tag { each { "x$it" } }
+$ tail -f log | lines |&gt; tag |&gt; print   # each line as it arrives</pre>
+
+  <h3>The item: $_ (from Hack and Perl)</h3>
+<pre># the stage after |% runs once per value; the value goes where $_ is,
+# or in as the last arg. An external gets it only through $_
+$ ...['a' 'bb'] |% len           # len $_
+▶ 1
+▶ 2
+$ ls | lines |% mv $_ $_.bak
+$ ...[1 2 3] |% $_ * 2 |&gt; list
+▶ [2 4 6]</pre>
+
+  <h3>Functional, no loops</h3>
+<pre># |% { } maps and filters; |&gt; list collects, ...$xs spreads
+$ ...[1 2 3 4 5] |% { if $it % 2 == 1 { $it * $it } } |&gt; list
+▶ [1 9 25]
+
+# recursion instead of loops; a generator is a fn that emits
+$ fn fact n { if $n &lt;= 1 { 1 } else { $n * (fact ($n - 1)) } }
+$ fact 5
+▶ 120
+$ fn evens n { if $n &gt; 0 { evens ($n - 2); $n } }
+$ evens 6 |&gt; list
+▶ [2 4 6]</pre>
+
+  <h3>Conditions</h3>
+<pre># a command is tested by its exit status, ( ) by its value
+$ if grep -q TODO main.go { print todo }
+$ fn big n { $n &gt; 9 }
+$ if (big 10) { print big }
+big
+$ if big 10 { print big }       # compile error: big ends in a value, so as a
+                                # command it always succeeds; to test it: (big ...)</pre>
+
+  <h3>Rational by default (from raku)</h3>
+<pre>$ 0.1 + 0.2 == 0.3
+▶ $true
+$ round 4 (1 / 3)               # no silent rounding
+▶ 0.3333</pre>
+
+  <h3>Multiline strings (from zig)</h3>
+<pre>$ let name = "world"
+$ let py =
+    $\\name = "$name"
+    \\print(f"hello {name}")
+$ print $py | python3 -
+hello world</pre>
+</section>
+
+<section id="editor">
+  <h2>Editor</h2>
+  <h3>Line editor</h3>
+  <p>Written from scratch. Multi-line and vi-style; insert mode also accepts
+  common emacs keys.</p>
+
+  <h3>Terminal integration</h3>
+  <p>Sets the window title (OSC 2), reports the working directory (OSC 7)
+  and marks prompts and command output (OSC 133), so terminals can open
+  new tabs in the same directory and jump between prompts.</p>
+
+  <h3>History search</h3>
+  <p><kbd>Ctrl-R</kbd> searches command history with fzf-style queries.
+  <kbd>Enter</kbd> puts the selection into your input, ready to edit or run.</p>
+  <figure class="demo" data-demo="history" aria-label="History search recording">
+    <pre class="demo-screen" aria-live="off">~/src/entish&gt;                                11/01/2026 09:15:55 PM
+history: git !log
+&gt; 11-01 21:15  git diff                                ~/src/entish
+  11-01 21:15  git status                              ~/src/entish</pre>
+  </figure>
+
+  <h3>Recent locations</h3>
+  <p><kbd>Ctrl-D</kbd> opens recent directories. Type to filter, then
+  <kbd>Enter</kbd> to jump there.</p>
+  <figure class="demo" data-demo="location" aria-label="Location search recording">
+    <pre class="demo-screen" aria-live="off">~&gt;                                           11/01/2026 09:16:02 PM
+location: src
+&gt; 11-01 21:15  ~/src/entish
+  11-01 21:15  ~/src/website</pre>
+  </figure>
+
+  <h3>Async completion</h3>
+  <p><kbd>Tab</kbd> gets command completions from Fish in the background,
+  including options and their descriptions. Press it again to cycle through matches;
+  <kbd>Enter</kbd> puts the selected one in without running.</p>
+  <figure class="demo" data-demo="completion" aria-label="Async completion recording">
+    <pre class="demo-screen" aria-live="off">~/src/entish&gt; git checkout --t               11/01/2026 09:16:09 PM
+--theirs  (Keep staged changes)  --track  (Track a new branch)</pre>
+  </figure>
+</section>
+
+<section id="see-also">
+  <h2>See also</h2>
+  <dl>
+    <dt><a href="https://elv.sh">elvish</a></dt><dd>value pipelines</dd>
+    <dt><a href="https://github.com/willghatch/racket-rash">rash</a></dt><dd>value pipelines</dd>
+    <dt><a href="https://docs.hhvm.com/hack/expressions-and-operators/pipe">hack</a></dt><dd>pipe topic</dd>
+    <dt><a href="https://raku.org">raku</a></dt><dd>rational numbers</dd>
+    <dt><a href="https://ziglang.org">zig</a></dt><dd>multiline strings</dd>
+    <dt><a href="https://fishshell.com">fish</a></dt><dd>completions</dd>
+  </dl>
+</section>
+
+    </article>
+</main>
+<footer><span>entish(1) · User Commands</span><time datetime="2026-11-01">2026-11-01</time><a href="#top">Back to top</a></footer>
+
+</div>
+<script src="contents.js" defer></script>
+<script src="recordings/frames.js" defer></script>
+<script src="demos.js" defer></script>
+</body>
+</html>

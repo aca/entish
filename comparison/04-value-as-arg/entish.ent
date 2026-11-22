@@ -1,0 +1,16 @@
+# values as an external's arguments
+#--- num: written as a decimal; literals keep their source text
+echo 0755 (1 + 2) (0.1 + 0.2)
+#--- a num with no exact decimal: runtime error
+echo (1 / 3)
+#--- bool: runtime error
+echo $true
+#--- list: compile error
+let xs = ['a' 'b']
+echo $xs
+#--- spread
+let xs = ['a' 'b']
+echo ...$xs
+#--- map: runtime error
+let m = [k: 'v']
+echo $m
